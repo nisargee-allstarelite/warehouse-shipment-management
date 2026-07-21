@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Awaiting Shipment - Bucket Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e3e5e9;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --accent: #0f766e;
+    --accent-light: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  h1 { font-size: 20px; margin: 0; }
+  .stats {
+    display: flex;
+    gap: 24px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .stats b { color: var(--text); font-size: 18px; display: block; }
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  input#search {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    width: 280px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+  button.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
+  #status-line {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  #grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(440px, 1fr));
+    gap: 12px;
+  }
+  .bucket-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 14px 16px;
+    cursor: pointer;
+  }
+  .bucket-card .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+  }
+  .bucket-name {
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .bucket-count {
+    background: var(--accent-light);
+    color: var(--accent);
+    font-weight: 700;
+    font-size: 13px;
+    padding: 2px 10px;
+    border-radius: 999px;
+  }
+  .bucket-detail {
+    display: none;
+    margin-top: 10px;
+    border-top: 1px solid var(--border);
+    padding-top: 10px;
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .bucket-detail.open { display: block; }
+  .item-row {
+    font-size: 12px;
+    color: var(--muted);
+    padding: 5px 0;
+    border-bottom: 1px dashed var(--border);
+    white-space: nowrap;
+    overflow-x: auto;
+    cursor: pointer;
+  }
+  .item-row:hover { color: var(--accent); }
+  .item-row .field { color: var(--text); font-weight: 600; }
+  .item-row .order-id { color: var(--muted); }
+  .item-count { color: var(--muted); font-weight: 400; }
+  .merge-row {
+    margin-top: 10px;
+    display: flex;
+    gap: 6px;
+  }
+  .merge-row select {
+    flex: 1;
+    font-size: 12px;
+    padding: 4px;
+  }
+  .merge-row button {
+    padding: 4px 10px;
+    font-size: 12px;
+  }
+  #empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 60px 0;
+    display: none;
+  }
+  /* Modal for full note detail */
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal-box {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 480px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  #modal-box h2 { margin: 0 0 12px 0; font-size: 16px; }
+  #modal-box pre {
+    white-space: pre-wrap;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    background: var(--bg);
+    padding: 12px;
+    border-radius: 8px;
+    line-height: 1.6;
+  }
+  #modal-close {
+    margin-top: 16px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Awaiting Shipment - Bucket Dashboard</h1>
+  <div class="stats">
+    <div><b id="stat-orders">-</b>orders</div>
+    <div><b id="stat-buckets">-</b>buckets</div>
+  </div>
+</header>
+
+<div class="top-bar">
+  <input id="search" placeholder="Search buckets (e.g. Jersey, Bones)..." oninput="renderBuckets()">
+  <div>
+    <span id="status-line">Loading...</span>
+    <button class="secondary" onclick="refreshNow()">Refresh now</button>
+  </div>
+</div>
+
+<div id="grid"></div>
+<div id="empty">No buckets match your search.</div>
+
+<div id="modal-overlay" onclick="closeModal(event)">
+  <div id="modal-box">
+    <h2 id="modal-title"></h2>
+    <pre id="modal-content"></pre>
+    <button id="modal-close" onclick="closeModal(event)">Close</button>
+  </div>
+</div>
+
+<script>
+let currentData = { buckets: [] };
+
+function bucketDetailId(key) {
+  return "detail-" + btoa(unescape(encodeURIComponent(key))).replace(/[^a-zA-Z0-9]/g, "");
+}
+
+function timeAgo(isoString) {
+  if (!isoString) return "never";
+  const seconds = Math.floor((new Date() - new Date(isoString)) / 1000);
+  if (seconds < 60) return seconds + "s ago";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+  return Math.floor(seconds / 3600) + "h ago";
+}
+
+async function loadData() {
+  const res = await fetch("/api/buckets");
+  currentData = await res.json();
+  document.getElementById("stat-orders").textContent = currentData.total_orders;
+  document.getElementById("stat-buckets").textContent = currentData.total_buckets;
+
+  const pollingText = currentData.is_polling ? " (refreshing now...)" : "";
+  const errorText = currentData.last_error ? ` - last error: ${currentData.last_error}` : "";
+  document.getElementById("status-line").textContent =
+    `Updated ${timeAgo(currentData.last_updated)}${pollingText}${errorText}`;
+
+  renderBuckets();
+}
+
+function renderBuckets() {
+  const query = document.getElementById("search").value.trim().toUpperCase();
+  const grid = document.getElementById("grid");
+  const empty = document.getElementById("empty");
+  grid.innerHTML = "";
+
+  const filtered = currentData.buckets.filter(b => b.key.toUpperCase().includes(query));
+  empty.style.display = filtered.length === 0 ? "block" : "none";
+
+  const allKeys = currentData.buckets.map(b => b.key);
+
+  filtered.forEach(bucket => {
+    const card = document.createElement("div");
+    card.className = "bucket-card";
+
+    const detailId = bucketDetailId(bucket.key);
+
+    const itemsHtml = bucket.items.slice(0, 200).map((item, idx) => {
+      // Every row is clickable -> opens a popup with the exact original note.
+      const clickAttr = `onclick="event.stopPropagation(); openNoteModal('${detailId}', ${idx})"`;
+
+      if (item.items_detail) {
+        // Multiple lines for this order in this bucket - compact summary, full detail on click
+        return `
+          <div class="item-row" ${clickAttr}>
+            <span class="order-id">Order ${item.order_id}</span>
+            <span class="item-count">(${item.items_detail.length} items, ${item.total_units} units total - click for details)</span>
+          </div>
+        `;
+      }
+
+      const nameOrSku = item.name || item.sku || "";
+      const colorPart = item.color ? ` - ${item.color}` : "";
+      return `
+        <div class="item-row" ${clickAttr}>
+          <span class="order-id">Order ${item.order_id}</span> —
+          <span class="field">${nameOrSku}</span>${colorPart},
+          <span class="field">Size ${item.size || "?"}</span>
+        </div>
+      `;
+    }).join("");
+
+    const otherOptions = allKeys
+      .filter(k => k !== bucket.key)
+      .map(k => `<option value="${k}">${k}</option>`)
+      .join("");
+
+    card.innerHTML = `
+      <div class="row" onclick="toggleDetail('${detailId}')">
+        <div class="bucket-name">${bucket.key}</div>
+        <div class="bucket-count">${bucket.count}</div>
+      </div>
+      <div class="bucket-detail" id="${detailId}">
+        ${itemsHtml}
+        <div class="merge-row" onclick="event.stopPropagation()">
+          <select id="merge-target-${detailId}">
+            <option value="">Merge into...</option>
+            ${otherOptions}
+          </select>
+          <button onclick="mergeBucket('${bucket.key}', '${detailId}')">Merge</button>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function toggleDetail(id) {
+  document.getElementById(id).classList.toggle("open");
+}
+
+function openNoteModal(detailId, itemIdx) {
+  const bucket = currentData.buckets.find(b => bucketDetailId(b.key) === detailId);
+  if (!bucket) return;
+  const item = bucket.items[itemIdx];
+  document.getElementById("modal-title").textContent = `Order ${item.order_id} - Full note`;
+  document.getElementById("modal-content").textContent = item.full_note || "(no note text)";
+  document.getElementById("modal-overlay").classList.add("open");
+}
+
+function closeModal(event) {
+  if (event.target.id === "modal-overlay" || event.target.id === "modal-close") {
+    document.getElementById("modal-overlay").classList.remove("open");
+  }
+}
+
+async function mergeBucket(fromKey, detailId) {
+  const select = document.getElementById("merge-target-" + detailId);
+  const intoKey = select.value;
+  if (!intoKey) return;
+  if (!confirm(`Merge "${fromKey}" into "${intoKey}"? This can't be undone from the UI.`)) return;
+
+  await fetch("/api/merge", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ from_key: fromKey, into_key: intoKey }),
+  });
+  loadData();
+}
+
+async function refreshNow() {
+  await fetch("/api/refresh", { method: "POST" });
+  setTimeout(loadData, 1000);
+}
+
+loadData();
+setInterval(loadData, 15000);
+</script>
+
+</body>
+</html>
