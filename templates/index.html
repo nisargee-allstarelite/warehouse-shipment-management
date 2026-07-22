@@ -175,6 +175,51 @@
   #modal-close {
     margin-top: 16px;
   }
+  .ship-row {
+    margin-top: 10px;
+    display: flex;
+    justify-content: flex-end;
+  }
+  .ship-btn {
+    background: #b45309;
+    font-size: 12px;
+    padding: 6px 12px;
+  }
+  .ship-btn:disabled {
+    background: #d1d5db;
+    cursor: not-allowed;
+  }
+  .ship-result-row {
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border);
+    font-size: 13px;
+  }
+  .ship-result-row.success { color: #166534; }
+  .ship-result-row.failure { color: #b91c1c; }
+  .ship-result-row a {
+    color: var(--accent);
+    font-weight: 600;
+  }
+  #ship-modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #ship-modal-overlay.open { display: flex; }
+  #ship-modal-box {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 560px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  #ship-modal-box h2 { margin: 0 0 12px 0; font-size: 16px; }
 </style>
 </head>
 <body>
@@ -203,6 +248,14 @@
     <h2 id="modal-title"></h2>
     <pre id="modal-content"></pre>
     <button id="modal-close" onclick="closeModal(event)">Close</button>
+  </div>
+</div>
+
+<div id="ship-modal-overlay" onclick="closeShipModal(event)">
+  <div id="ship-modal-box">
+    <h2 id="ship-modal-title"></h2>
+    <div id="ship-modal-content"></div>
+    <button id="ship-modal-close" onclick="closeShipModal(event)">Close</button>
   </div>
 </div>
 
@@ -282,6 +335,18 @@ function renderBuckets() {
       .map(k => `<option value="${k}">${k}</option>`)
       .join("");
 
+    // Bundles and Needs Review need a human to look at the actual note
+    // before shipping - no bulk-ship button on those, only real product
+    // category buckets get one.
+    const isShippable = !bucket.key.includes("BUNDLES") && !bucket.key.includes("NEEDS REVIEW");
+    const shipRowHtml = isShippable ? `
+      <div class="ship-row" onclick="event.stopPropagation()">
+        <button class="ship-btn" id="ship-btn-${detailId}" onclick="shipBucket('${bucket.key}', '${detailId}')">
+          Ship all ${bucket.count} order${bucket.count === 1 ? "" : "s"} in this bucket
+        </button>
+      </div>
+    ` : "";
+
     card.innerHTML = `
       <div class="row" onclick="toggleDetail('${detailId}')">
         <div class="bucket-name">${bucket.key}</div>
@@ -296,6 +361,7 @@ function renderBuckets() {
           </select>
           <button onclick="mergeBucket('${bucket.key}', '${detailId}')">Merge</button>
         </div>
+        ${shipRowHtml}
       </div>
     `;
     grid.appendChild(card);
@@ -338,6 +404,89 @@ async function mergeBucket(fromKey, detailId) {
 async function refreshNow() {
   await fetch("/api/refresh", { method: "POST" });
   setTimeout(loadData, 1000);
+}
+
+async function shipBucket(bucketKey, detailId) {
+  const count = currentData.buckets.find(b => b.key === bucketKey)?.count || 0;
+  const confirmed = confirm(
+    `This will purchase REAL shipping labels for ${count} order(s) in "${bucketKey}".\n\n` +
+    `This spends real money and cannot be undone. Continue?`
+  );
+  if (!confirmed) return;
+
+  const btn = document.getElementById("ship-btn-" + detailId);
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Shipping... please wait";
+
+  try {
+    const res = await fetch("/api/ship_bucket", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ bucket_key: bucketKey }),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      alert("Error: " + data.error);
+      return;
+    }
+
+    showShipResults(bucketKey, data);
+  } catch (err) {
+    alert("Something went wrong: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+    setTimeout(loadData, 2000);  // let the background refresh catch up
+  }
+}
+
+function showShipResults(bucketKey, data) {
+  const results = data.results;
+  const succeeded = results.filter(r => r.success);
+  const failed = results.filter(r => !r.success);
+
+  document.getElementById("ship-modal-title").textContent =
+    `${bucketKey} - ${succeeded.length} shipped, ${failed.length} failed`;
+
+  let combinedHtml = "";
+  if (data.combined_pdf_url) {
+    combinedHtml = `
+      <div style="margin-bottom:16px; padding:12px; background:var(--accent-light); border-radius:8px;">
+        <a href="${data.combined_pdf_url}" target="_blank" style="font-size:14px;">
+          Download all ${data.combined_pdf_page_count} label(s) as one PDF
+        </a>
+        <div style="color:var(--muted); font-size:12px; margin-top:4px;">One file, all labels as separate pages - print it once.</div>
+      </div>
+    `;
+  }
+
+  const rowsHtml = results.map(r => {
+    if (r.success) {
+      return `
+        <div class="ship-result-row success">
+          Order ${r.order_id} - shipped (tracking: ${r.tracking_number})
+          <br><a href="${r.doc_url}" target="_blank">Open individual label PDF</a>
+          <span style="color:var(--muted)"> (link expires in 24h)</span>
+        </div>
+      `;
+    }
+    return `
+      <div class="ship-result-row failure">
+        Order ${r.order_id} - failed at "${r.stage || "unknown"}" step: ${r.error || "Unknown error"}
+      </div>
+    `;
+  }).join("");
+
+  document.getElementById("ship-modal-content").innerHTML = combinedHtml + rowsHtml;
+  document.getElementById("ship-modal-overlay").classList.add("open");
+}
+
+function closeShipModal(event) {
+  if (event.target.id === "ship-modal-overlay" || event.target.id === "ship-modal-close") {
+    document.getElementById("ship-modal-overlay").classList.remove("open");
+  }
 }
 
 loadData();

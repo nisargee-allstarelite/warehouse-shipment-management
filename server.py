@@ -15,11 +15,12 @@ import threading
 import time
 from datetime import datetime
 
-from flask import Flask, jsonify, request, render_template
+from flask import Flask, jsonify, request, render_template, send_from_directory
 from dotenv import load_dotenv
 
 import tiktok_api
 from bucketing import bucket_orders
+from shipping import ship_orders, build_combined_label_pdf, LABELS_DIR
 
 load_dotenv()
 
@@ -156,6 +157,46 @@ def api_merge():
             save_state()
 
     return jsonify({"status": "merged"})
+
+
+@app.route("/api/ship_bucket", methods=["POST"])
+def api_ship_bucket():
+    """
+    Purchases REAL shipping labels for every order currently in the given
+    bucket, using the verified 3-step pipeline (Create Packages -> Batch
+    Ship -> Get Document). This spends real money the moment it runs - the
+    frontend is responsible for confirming with the person before calling
+    this endpoint.
+    """
+    data = request.get_json()
+    bucket_key = data.get("bucket_key")
+
+    with state_lock:
+        items = state["buckets"].get(bucket_key, [])
+        order_ids = [item["order_id"] for item in items]
+
+    if not order_ids:
+        return jsonify({"error": "No orders found in that bucket"}), 400
+
+    results = ship_orders(order_ids)
+
+    combined_filename, included_orders, skipped_orders = build_combined_label_pdf(results, bucket_key)
+
+    # Refresh right away so shipped orders drop out of the queue immediately
+    # instead of waiting for the next scheduled poll.
+    threading.Thread(target=poll_once, daemon=True).start()
+
+    return jsonify({
+        "results": results,
+        "combined_pdf_url": f"/api/labels/{combined_filename}" if combined_filename else None,
+        "combined_pdf_page_count": len(included_orders),
+        "combined_pdf_skipped": skipped_orders,
+    })
+
+
+@app.route("/api/labels/<path:filename>")
+def api_get_label(filename):
+    return send_from_directory(LABELS_DIR, filename, as_attachment=False)
 
 
 if __name__ == "__main__":
