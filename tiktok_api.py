@@ -104,16 +104,16 @@ def get_all_order_ids(days_back=90, order_status=None):
 
 
 def get_order_details(order_ids):
-    """Get Order Detail accepts up to 50 ids per call - batch accordingly."""
     path = f"/order/{VERSION}/orders"
     all_orders = []
-
     for i in range(0, len(order_ids), 50):
         batch = order_ids[i:i + 50]
-        data = make_request("GET", path, query_params={"ids": ",".join(batch)})
-        orders = data.get("data", {}).get("orders", [])
+        data = make_request("GET", path, query_params={"ids": ",".join(batch)}, quiet=True)
+        if data.get("code") != 0:
+            print(f"WARNING: skipping a batch due to API error: {data.get('message')}")
+            continue
+        orders = (data.get("data") or {}).get("orders", [])
         all_orders.extend(orders)
-
     return all_orders
 
 
