@@ -3,6 +3,7 @@
 
 # Generated at runtime
 state.json
+labels/
 
 # Python
 __pycache__/

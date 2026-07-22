@@ -15,7 +15,7 @@ import threading
 import time
 from datetime import datetime
 
-from flask import Flask, jsonify, request, render_template, send_from_directory
+from flask import Flask, jsonify, request, render_template, send_from_directory, session, redirect, url_for
 from dotenv import load_dotenv
 
 import tiktok_api
@@ -27,8 +27,46 @@ load_dotenv()
 POLL_INTERVAL_SECONDS = int(os.environ.get("POLL_INTERVAL_SECONDS", 300))
 PORT = int(os.environ.get("PORT", 5000))
 STATE_FILE = "state.json"
+DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
 
 app = Flask(__name__)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY")
+
+if not DASHBOARD_PASSWORD:
+    raise RuntimeError("DASHBOARD_PASSWORD is not set in .env - the site cannot start without it.")
+if not app.secret_key:
+    raise RuntimeError("FLASK_SECRET_KEY is not set in .env - the site cannot start without it.")
+
+
+@app.before_request
+def require_login():
+    """Every route needs a valid session, except the login page itself and
+    static assets. This is a single shared password, not individual
+    accounts - good enough to keep the public internet out, not meant as
+    strong multi-user security."""
+    if request.endpoint in ("login", "static"):
+        return
+    if not session.get("authenticated"):
+        return redirect(url_for("login"))
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    error = None
+    if request.method == "POST":
+        if request.form.get("password") == DASHBOARD_PASSWORD:
+            session["authenticated"] = True
+            session.permanent = True
+            return redirect(url_for("index"))
+        error = "Incorrect password."
+    return render_template("login.html", error=error)
+
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("login"))
+
 
 state_lock = threading.Lock()
 state = {
