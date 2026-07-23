@@ -122,6 +122,11 @@
   .item-row .field { color: var(--text); font-weight: 600; }
   .item-row .order-id { color: var(--muted); }
   .item-count { color: var(--muted); font-weight: 400; }
+  .item-checkbox {
+    margin-right: 8px;
+    vertical-align: middle;
+    cursor: pointer;
+  }
   .merge-row {
     margin-top: 10px;
     display: flex;
@@ -179,6 +184,7 @@
     margin-top: 10px;
     display: flex;
     justify-content: flex-end;
+    gap: 8px;
   }
   .ship-btn {
     background: #b45309;
@@ -229,6 +235,7 @@
   <div class="stats">
     <div><b id="stat-orders">-</b>orders</div>
     <div><b id="stat-buckets">-</b>buckets</div>
+    <div><a href="/history" style="color:var(--muted); font-size:13px;">Shipping History</a></div>
     <div><a href="/logout" style="color:var(--muted); font-size:13px;">Log out</a></div>
   </div>
 </header>
@@ -262,6 +269,7 @@
 
 <script>
 let currentData = { buckets: [] };
+let selectedOrders = {}; // bucketKey -> Set of order_ids currently checked
 
 function bucketDetailId(key) {
   return "detail-" + btoa(unescape(encodeURIComponent(key))).replace(/[^a-zA-Z0-9]/g, "");
@@ -306,15 +314,23 @@ function renderBuckets() {
 
     const detailId = bucketDetailId(bucket.key);
 
+    // Bundles and Needs Review need a human to look at the actual note
+    // before shipping - no bulk-ship button (and no checkboxes) on those,
+    // only real product category buckets get them.
+    const isShippable = !bucket.key.includes("BUNDLES") && !bucket.key.includes("NEEDS REVIEW");
+
     const itemsHtml = bucket.items.slice(0, 200).map((item, idx) => {
       // Every row is clickable -> opens a popup with the exact original note.
       const clickAttr = `onclick="event.stopPropagation(); openNoteModal('${detailId}', ${idx})"`;
+
+      const isChecked = selectedOrders[bucket.key]?.has(item.order_id) ? "checked" : "";
+      const checkboxHtml = isShippable ? `<input type="checkbox" class="item-checkbox" ${isChecked} onclick="event.stopPropagation(); toggleOrderSelection('${bucket.key}', '${item.order_id}', this.checked, '${detailId}')">` : "";
 
       if (item.items_detail) {
         // Multiple lines for this order in this bucket - compact summary, full detail on click
         return `
           <div class="item-row" ${clickAttr}>
-            <span class="order-id">Order ${item.order_id}</span>
+            ${checkboxHtml}<span class="order-id">Order ${item.order_id}</span>
             <span class="item-count">(${item.items_detail.length} items, ${item.total_units} units total - click for details)</span>
           </div>
         `;
@@ -324,7 +340,7 @@ function renderBuckets() {
       const colorPart = item.color ? ` - ${item.color}` : "";
       return `
         <div class="item-row" ${clickAttr}>
-          <span class="order-id">Order ${item.order_id}</span> —
+          ${checkboxHtml}<span class="order-id">Order ${item.order_id}</span> —
           <span class="field">${nameOrSku}</span>${colorPart},
           <span class="field">Size ${item.size || "?"}</span>
         </div>
@@ -336,12 +352,11 @@ function renderBuckets() {
       .map(k => `<option value="${k}">${k}</option>`)
       .join("");
 
-    // Bundles and Needs Review need a human to look at the actual note
-    // before shipping - no bulk-ship button on those, only real product
-    // category buckets get one.
-    const isShippable = !bucket.key.includes("BUNDLES") && !bucket.key.includes("NEEDS REVIEW");
     const shipRowHtml = isShippable ? `
       <div class="ship-row" onclick="event.stopPropagation()">
+        <button class="ship-btn secondary" id="ship-selected-btn-${detailId}" onclick="shipSelected('${bucket.key}', '${detailId}')">
+          Ship selected (<span id="selected-count-${detailId}">${selectedOrders[bucket.key]?.size || 0}</span>)
+        </button>
         <button class="ship-btn" id="ship-btn-${detailId}" onclick="shipBucket('${bucket.key}', '${detailId}')">
           Ship all ${bucket.count} order${bucket.count === 1 ? "" : "s"} in this bucket
         </button>
@@ -371,6 +386,17 @@ function renderBuckets() {
 
 function toggleDetail(id) {
   document.getElementById(id).classList.toggle("open");
+}
+
+function toggleOrderSelection(bucketKey, orderId, checked, detailId) {
+  if (!selectedOrders[bucketKey]) selectedOrders[bucketKey] = new Set();
+  if (checked) {
+    selectedOrders[bucketKey].add(orderId);
+  } else {
+    selectedOrders[bucketKey].delete(orderId);
+  }
+  const countSpan = document.getElementById("selected-count-" + detailId);
+  if (countSpan) countSpan.textContent = selectedOrders[bucketKey].size;
 }
 
 function openNoteModal(detailId, itemIdx) {
@@ -407,24 +433,27 @@ async function refreshNow() {
   setTimeout(loadData, 1000);
 }
 
-async function shipBucket(bucketKey, detailId) {
-  const count = currentData.buckets.find(b => b.key === bucketKey)?.count || 0;
+async function doShip(bucketKey, detailId, orderIds, btnId) {
+  const count = orderIds ? orderIds.length : (currentData.buckets.find(b => b.key === bucketKey)?.count || 0);
   const confirmed = confirm(
     `This will purchase REAL shipping labels for ${count} order(s) in "${bucketKey}".\n\n` +
     `This spends real money and cannot be undone. Continue?`
   );
   if (!confirmed) return;
 
-  const btn = document.getElementById("ship-btn-" + detailId);
+  const btn = document.getElementById(btnId);
   const originalText = btn.textContent;
   btn.disabled = true;
   btn.textContent = "Shipping... please wait";
 
   try {
+    const body = { bucket_key: bucketKey };
+    if (orderIds) body.order_ids = orderIds;
+
     const res = await fetch("/api/ship_bucket", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bucket_key: bucketKey }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
 
@@ -434,6 +463,7 @@ async function shipBucket(bucketKey, detailId) {
     }
 
     showShipResults(bucketKey, data);
+    if (selectedOrders[bucketKey]) selectedOrders[bucketKey].clear();
   } catch (err) {
     alert("Something went wrong: " + err.message);
   } finally {
@@ -441,6 +471,19 @@ async function shipBucket(bucketKey, detailId) {
     btn.textContent = originalText;
     setTimeout(loadData, 2000);  // let the background refresh catch up
   }
+}
+
+async function shipBucket(bucketKey, detailId) {
+  await doShip(bucketKey, detailId, null, "ship-btn-" + detailId);
+}
+
+async function shipSelected(bucketKey, detailId) {
+  const ids = Array.from(selectedOrders[bucketKey] || []);
+  if (ids.length === 0) {
+    alert("No orders selected - check the boxes next to the orders you want to ship first.");
+    return;
+  }
+  await doShip(bucketKey, detailId, ids, "ship-selected-btn-" + detailId);
 }
 
 function showShipResults(bucketKey, data) {

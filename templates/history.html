@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Shipping History - Awaiting Shipment Dashboard</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --border: #e3e5e9;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --accent: #0f766e;
+    --accent-light: #ccfbf1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    margin: 0;
+    padding: 24px;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 24px;
+  }
+  h1 { font-size: 20px; margin: 0; }
+  .stats {
+    display: flex;
+    gap: 24px;
+    font-size: 14px;
+    color: var(--muted);
+  }
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+  }
+  input#search {
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 14px;
+    width: 320px;
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 8px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  button:hover { opacity: 0.9; }
+  #status-line {
+    font-size: 13px;
+    color: var(--muted);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  thead th {
+    text-align: left;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--muted);
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  tbody td {
+    padding: 10px 14px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--bg); }
+  .status-badge {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 2px 8px;
+    border-radius: 999px;
+    display: inline-block;
+  }
+  .status-success { background: var(--accent-light); color: #166534; }
+  .status-failure { background: #fee2e2; color: #b91c1c; }
+  .note-cell {
+    max-width: 320px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+  }
+  .note-cell:hover { color: var(--accent); }
+  a.label-link {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+  a.label-link:hover { text-decoration: underline; }
+  .muted { color: var(--muted); }
+  #empty {
+    color: var(--muted);
+    text-align: center;
+    padding: 60px 0;
+    display: none;
+  }
+  #modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.4);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+  }
+  #modal-overlay.open { display: flex; }
+  #modal-box {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 24px;
+    max-width: 480px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+  }
+  #modal-box h2 { margin: 0 0 12px 0; font-size: 16px; }
+  #modal-box pre {
+    white-space: pre-wrap;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    background: var(--bg);
+    padding: 12px;
+    border-radius: 8px;
+    line-height: 1.6;
+  }
+  #modal-close { margin-top: 16px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Shipping History</h1>
+  <div class="stats">
+    <div><a href="/" style="color:var(--muted); font-size:13px;">Back to Dashboard</a></div>
+    <div><a href="/logout" style="color:var(--muted); font-size:13px;">Log out</a></div>
+  </div>
+</header>
+
+<div class="top-bar">
+  <input id="search" placeholder="Search by order ID, product, tracking number, or bucket..." oninput="onSearchInput()">
+  <span id="status-line">Loading...</span>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Order ID</th>
+      <th>Bucket</th>
+      <th>Product</th>
+      <th>Status</th>
+      <th>Tracking</th>
+      <th>Label</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty">No shipping history matches your search.</div>
+
+<div id="modal-overlay" onclick="closeModal(event)">
+  <div id="modal-box">
+    <h2 id="modal-title"></h2>
+    <pre id="modal-content"></pre>
+    <button id="modal-close" onclick="closeModal(event)">Close</button>
+  </div>
+</div>
+
+<script>
+let currentEntries = [];
+let searchDebounce = null;
+
+function timeAgo(isoString) {
+  if (!isoString) return "";
+  const seconds = Math.floor((new Date() - new Date(isoString)) / 1000);
+  if (seconds < 60) return seconds + "s ago";
+  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
+  if (seconds < 86400) return Math.floor(seconds / 3600) + "h ago";
+  return Math.floor(seconds / 86400) + "d ago";
+}
+
+function onSearchInput() {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(loadHistory, 250);
+}
+
+async function loadHistory() {
+  const search = document.getElementById("search").value.trim();
+  document.getElementById("status-line").textContent = "Loading...";
+
+  const res = await fetch("/api/shipping_history?search=" + encodeURIComponent(search));
+  const data = await res.json();
+  currentEntries = data.entries || [];
+
+  document.getElementById("status-line").textContent =
+    `${data.count} result${data.count === 1 ? "" : "s"}`;
+
+  renderRows();
+}
+
+function renderRows() {
+  const tbody = document.getElementById("rows");
+  const empty = document.getElementById("empty");
+
+  if (currentEntries.length === 0) {
+    tbody.innerHTML = "";
+    empty.style.display = "block";
+    return;
+  }
+  empty.style.display = "none";
+
+  tbody.innerHTML = currentEntries.map((e, idx) => {
+    const statusHtml = e.success
+      ? `<span class="status-badge status-success">Shipped</span>`
+      : `<span class="status-badge status-failure">Failed${e.stage ? " (" + e.stage + ")" : ""}</span>`;
+
+    const labelHtml = e.combined_pdf_filename
+      ? `<a class="label-link" href="/api/labels/${e.combined_pdf_filename}" target="_blank">Open PDF</a>`
+      : `<span class="muted">—</span>`;
+
+    const noteSnippet = (e.full_note || "").slice(0, 60) || "(no note)";
+
+    return `
+      <tr>
+        <td class="muted">${timeAgo(e.logged_at)}</td>
+        <td>${e.order_id || ""}</td>
+        <td>${e.bucket_key || ""}</td>
+        <td class="note-cell" onclick="openNoteModal(${idx})" title="Click to see full note">${noteSnippet}</td>
+        <td>${statusHtml}</td>
+        <td class="muted">${e.tracking_number || (e.error || "")}</td>
+        <td>${labelHtml}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function openNoteModal(idx) {
+  const e = currentEntries[idx];
+  if (!e) return;
+  document.getElementById("modal-title").textContent = `Order ${e.order_id} - Full note`;
+  document.getElementById("modal-content").textContent = e.full_note || "(no note text)";
+  document.getElementById("modal-overlay").classList.add("open");
+}
+
+function closeModal(event) {
+  if (event.target.id === "modal-overlay" || event.target.id === "modal-close") {
+    document.getElementById("modal-overlay").classList.remove("open");
+  }
+}
+
+loadHistory();
+</script>
+
+</body>
+</html>

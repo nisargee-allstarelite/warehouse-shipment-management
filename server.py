@@ -13,14 +13,14 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, render_template, send_from_directory, session, redirect, url_for
 from dotenv import load_dotenv
 
 import tiktok_api
 from bucketing import bucket_orders
-from shipping import ship_orders, build_combined_label_pdf, LABELS_DIR
+from shipping import ship_orders, build_combined_label_pdf, log_shipping_results, get_shipping_history, LABELS_DIR
 
 load_dotenv()
 
@@ -114,7 +114,7 @@ def apply_merges(buckets):
 
 
 def poll_once():
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Polling TikTok for current Awaiting Shipment queue...")
+    print(f"[{datetime.now(timezone.utc).strftime('%H:%M:%S')} UTC] Polling TikTok for current Awaiting Shipment queue...")
     with state_lock:
         state["is_polling"] = True
         state["last_error"] = None
@@ -126,8 +126,16 @@ def poll_once():
 
         with state_lock:
             state["buckets"] = buckets
-            state["total_orders"] = len(orders)
-            state["last_updated"] = datetime.now().isoformat()
+            # total_orders reflects only ACTIONABLE orders - ones that have a
+            # seller note and got placed in a real bucket. An Awaiting
+            # Shipment order with no note yet isn't ready to process, so it
+            # shouldn't count toward the number shown at the top of the
+            # dashboard (bucket_orders already silently skips these).
+            state["total_orders"] = sum(len(v) for v in buckets.values())
+            # Timezone-aware timestamp - a naive one here gets misread by
+            # the browser's Date parser as local time instead of UTC,
+            # which is what caused the "-14245s ago" display bug.
+            state["last_updated"] = datetime.now(timezone.utc).isoformat()
             state["is_polling"] = False
             save_state()
 
@@ -148,6 +156,11 @@ def poll_loop():
 @app.route("/")
 def index():
     return render_template("index.html", poll_interval=POLL_INTERVAL_SECONDS)
+
+
+@app.route("/history")
+def history_page():
+    return render_template("history.html")
 
 
 @app.route("/api/buckets")
@@ -200,25 +213,34 @@ def api_merge():
 @app.route("/api/ship_bucket", methods=["POST"])
 def api_ship_bucket():
     """
-    Purchases REAL shipping labels for every order currently in the given
-    bucket, using the verified 3-step pipeline (Create Packages -> Batch
-    Ship -> Get Document). This spends real money the moment it runs - the
-    frontend is responsible for confirming with the person before calling
-    this endpoint.
+    Purchases REAL shipping labels for orders in the given bucket, using the
+    verified 3-step pipeline (Create Packages -> Batch Ship -> Get Document).
+    This spends real money the moment it runs - the frontend is responsible
+    for confirming with the person before calling this endpoint.
+
+    By default ships every order currently in the bucket. If the request
+    body includes "order_ids" (a specific list, from checkbox multi-select
+    in the UI), only those orders are shipped instead - everything else in
+    the bucket is left alone.
     """
     data = request.get_json()
     bucket_key = data.get("bucket_key")
+    selected_ids = data.get("order_ids")  # optional - checkbox multi-select
 
     with state_lock:
         items = state["buckets"].get(bucket_key, [])
-        order_ids = [item["order_id"] for item in items]
+        if selected_ids:
+            selected_set = set(selected_ids)
+            items = [it for it in items if it.get("order_id") in selected_set]
 
-    if not order_ids:
+    if not items:
         return jsonify({"error": "No orders found in that bucket"}), 400
 
-    results = ship_orders(order_ids)
+    results = ship_orders(items)
 
     combined_filename, included_orders, skipped_orders = build_combined_label_pdf(results, bucket_key)
+
+    log_shipping_results(results, bucket_key, combined_filename)
 
     # Refresh right away so shipped orders drop out of the queue immediately
     # instead of waiting for the next scheduled poll.
@@ -235,6 +257,13 @@ def api_ship_bucket():
 @app.route("/api/labels/<path:filename>")
 def api_get_label(filename):
     return send_from_directory(LABELS_DIR, filename, as_attachment=False)
+
+
+@app.route("/api/shipping_history")
+def api_shipping_history():
+    search = request.args.get("search", "")
+    entries = get_shipping_history(search=search, limit=300)
+    return jsonify({"entries": entries, "count": len(entries)})
 
 
 if __name__ == "__main__":

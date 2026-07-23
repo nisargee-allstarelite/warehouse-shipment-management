@@ -10,9 +10,11 @@ IMPORTANT: every call here is REAL. Create Packages genuinely purchases a label
 and spends real money the moment it succeeds. There is no dry-run mode.
 """
 
+import json
 import os
 import time
 import requests
+from datetime import datetime, timezone
 from io import BytesIO
 from pypdf import PdfReader, PdfWriter
 from tiktok_api import make_request, VERSION
@@ -20,6 +22,7 @@ from tiktok_api import make_request, VERSION
 DOCUMENT_TYPE = "SHIPPING_LABEL_AND_PACKING_SLIP"
 HANDOVER_METHOD = "PICKUP"
 LABELS_DIR = "labels"
+SHIPPING_LOG_FILE = "shipping_history.jsonl"
 
 
 def create_package(order_id):
@@ -83,7 +86,10 @@ def batch_ship_packages(package_ids, handover_method=HANDOVER_METHOD):
 def get_shipping_document(package_id):
     """
     Step 3. Retrieves the label + packing slip URL for an already-shipped
-    package. The URL TikTok returns is only valid for 24 hours.
+    package. The URL TikTok returns is only valid for 24 hours - that's why
+    build_combined_label_pdf() below downloads it immediately and saves a
+    permanent local copy, rather than relying on this URL for anything
+    beyond the immediate ship action.
 
     Returns (success, result) where result is either {doc_url, tracking_number}
     or an error dict.
@@ -101,19 +107,27 @@ def get_shipping_document(package_id):
     }
 
 
-def ship_orders(order_ids, progress_callback=None):
+def ship_orders(items, progress_callback=None):
     """
-    Runs the full pipeline for a list of order_ids and returns one result dict
-    per order, regardless of where it succeeded or failed:
+    Runs the full pipeline for a list of orders and returns one result dict
+    per order, regardless of where it succeeded or failed.
+
+    `items` accepts either:
+      - a list of order_id strings (old-style, still supported), or
+      - a list of dicts with at least "order_id" and optionally "full_note"
+        (the actual bucket item dicts from bucketing.py) - this is what lets
+        Shipping History later show/search the original note text alongside
+        each result.
 
     {
         "order_id": "...",
+        "full_note": "...",            (carried through from the input item, if provided)
         "success": True/False,
-        "stage": "create_package" | "ship" | "get_document" | None (None if fully successful),
-        "error": "..." (only present if success is False),
+        "stage": "create_package" | "ship" | "get_document" | None,
+        "error": "...",                (only present if success is False)
         "package_id": "...",           (present once created)
         "tracking_number": "...",      (present once shipped + document retrieved)
-        "doc_url": "...",              (present once document retrieved)
+        "doc_url": "...",              (present once document retrieved - expires in 24h)
         "shipping_price": "...",       (present once created)
     }
 
@@ -126,7 +140,25 @@ def ship_orders(order_ids, progress_callback=None):
         if progress_callback:
             progress_callback(msg)
 
-    results = {oid: {"order_id": oid, "success": False} for oid in order_ids}
+    # Normalize input - accept either bare ID strings or full item dicts,
+    # so this keeps working for any old caller that still passes bare IDs.
+    normalized = []
+    for it in items:
+        if isinstance(it, dict):
+            normalized.append({
+                "order_id": it.get("order_id", ""),
+                "full_note": it.get("full_note", ""),
+            })
+        else:
+            normalized.append({"order_id": it, "full_note": ""})
+
+    order_ids = [it["order_id"] for it in normalized]
+    note_lookup = {it["order_id"]: it["full_note"] for it in normalized}
+
+    results = {
+        oid: {"order_id": oid, "full_note": note_lookup.get(oid, ""), "success": False}
+        for oid in order_ids
+    }
 
     # --- Step 1: Create Packages, one call per order ---
     order_to_package = {}
@@ -184,6 +216,9 @@ def build_combined_label_pdf(results, bucket_key):
     Downloads every successfully-generated label PDF and merges them into
     ONE multi-page PDF - so the ops manager can open a single file and print
     everything for this batch in one go, instead of clicking N separate links.
+    This combined file is saved permanently to LABELS_DIR - unlike the
+    individual doc_url from TikTok (which expires in 24h), this file stays
+    on disk and is what Shipping History links back to.
 
     Returns (filename, included_orders, skipped_orders). filename is relative
     to LABELS_DIR, or None if there was nothing successful to combine. Orders
@@ -220,3 +255,61 @@ def build_combined_label_pdf(results, bucket_key):
         writer.write(f)
 
     return filename, included_orders, skipped_orders
+
+
+def log_shipping_results(results, bucket_key, combined_pdf_filename=None):
+    """
+    Permanently appends every result from one ship_orders() call to a
+    JSON-Lines log file (never overwritten, survives restarts) - this is
+    what powers the Shipping History page.
+
+    Includes combined_pdf_filename so History can link back to a label
+    that's still actually downloadable (the permanent local copy), not the
+    24h TikTok doc_url which will be dead by the time anyone looks this up
+    later.
+    """
+    with open(SHIPPING_LOG_FILE, "a") as f:
+        for r in results:
+            entry = dict(r)
+            entry["bucket_key"] = bucket_key
+            entry["combined_pdf_filename"] = combined_pdf_filename
+            entry["logged_at"] = datetime.now(timezone.utc).isoformat()
+            f.write(json.dumps(entry) + "\n")
+
+
+def get_shipping_history(search="", limit=200):
+    """
+    Returns logged shipping results, most recent first.
+
+    If search is provided, filters to entries whose order_id, full_note,
+    tracking_number, or bucket_key contains the search text
+    (case-insensitive) - so "what happened to that jersey order from
+    Tuesday" is actually answerable without digging through TikTok Seller
+    Center by hand.
+    """
+    if not os.path.exists(SHIPPING_LOG_FILE):
+        return []
+
+    entries = []
+    with open(SHIPPING_LOG_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entries.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+
+    if search:
+        q = search.lower()
+
+        def matches(e):
+            haystack = " ".join(str(e.get(k, "")) for k in
+                                 ("order_id", "full_note", "tracking_number", "bucket_key"))
+            return q in haystack.lower()
+
+        entries = [e for e in entries if matches(e)]
+
+    entries.reverse()  # most recent first
+    return entries[:limit]

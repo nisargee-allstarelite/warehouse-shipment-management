@@ -6,16 +6,28 @@ Three kinds of notes, based on what info is present:
     (2nd dash segment, or 2nd+3rd combined for codes like SWEAT-JKT) is
     looked up in CATEGORY_MAP. Unmapped codes go into "Others".
   - Descriptive name only (e.g. "WATSON BONES SNEAKERS (COLOR) - Size L"):
-    bucketed by the exact base name. Similar-but-different names (e.g.
-    Bones vs Bonesta) are kept as SEPARATE buckets on purpose - use the
-    dashboard's merge button if you ever want to combine two by hand.
+    matched against our known category names (88 finalized categories:
+    shoe lines, named apparel, generic categories, accessories) so e.g.
+    "JORDAN BASKETBALL JERSEY" routes into the shared "Basketball Jersey"
+    bucket rather than creating a one-off bucket for the literal name.
+    Anything that looks like a real product but doesn't match a known
+    category lands in "Others". Genuinely unparseable fragments (too
+    short, a bare number, a stray size/qty leftover) go to NEEDS REVIEW.
   - Both name and SKU: "PRODUCT NAME (COLOR) - Size L - SKU: XXXXX".
     Bucketed by the descriptive name (broad category), SKU kept as a
     field for reference/lookup.
 
-Every order also gets its full name / sku / color / size captured so the
-dashboard can show one clean line per order, regardless of which format
-the note used.
+Every order produces exactly ONE row in exactly ONE bucket, no matter how
+many line items its note contains:
+  - All lines the SAME category -> one row in that category's bucket,
+    with a compact "N items" summary that expands to full detail on click
+  - Lines spanning 2+ DIFFERENT categories -> one row in Bundles, same
+    click-to-expand behavior
+  - A single clean line -> one simple row, as before
+This matters beyond display - the "Ship all in this bucket" button
+collects every order_id shown and ships each one once. A duplicated
+order_id across two rows would mean two real label purchases for one
+order, so one-row-per-order is enforced here, not just cosmetic.
 """
 
 import re
@@ -24,7 +36,7 @@ OTHERS = "Others"
 NEEDS_REVIEW = "\u26a0\ufe0f NEEDS REVIEW"
 BUNDLES = "\U0001F4E6 BUNDLES (multi-item orders)"
 
-# --- Your category abbreviations ---
+# --- Legacy SKU-code format (unchanged) ---
 CATEGORY_MAP = {
     "DNMSHT": "Denim Shorts",
     "BBJ": "Basketball Jersey",
@@ -65,7 +77,254 @@ def match_category_code(parts):
     one_seg = parts[1].strip().upper()
     return CATEGORY_MAP.get(one_seg, OTHERS)
 
-SIZE_PATTERN = re.compile(r'[-\u2013\u2014]?\s*Size\s+(\S+)$', re.IGNORECASE)
+
+# ─── Descriptive-name category matching (88-category master list) ────
+#
+# Built from product_categories_FINAL.xlsx. Checked in TIERS, not one
+# flat pool - a shoe line name (e.g. "BONES", 5 letters) is often
+# SHORTER than the generic word that follows it in the same note
+# ("SNEAKERS", 8 letters). Pure longest-match-wins across all 88 at once
+# would let "Sneakers" win over "Bones" - wrong. So each tier is checked
+# in priority order, and only the longest match WITHIN that tier is
+# used, before falling through to the next tier. Singular and plural
+# forms are both listed explicitly per category for clarity, even where
+# substring matching would technically catch the plural via the
+# singular form alone.
+
+SHOE_LINE_ALIASES = {
+    "COURT CLASSIC 2":  "Court Classic 2",
+    "COURT CLASSIC":    "Court Classic",
+    "CHUNKY BONES":     "Chunky Bones",
+    "CRYPT CRAWLER":    "Crypt Crawler",
+    "VULTURE STRAP":    "Vulture Strap",
+    "VULTURE V2":       "Vulture V2",
+    "VULTURE":          "Vulture",
+    "TRIPLE 7 RACER":   "Triple 7 Racer",
+    "LIFESTYLE 01":     "Lifestyle 01",
+    "SOUL SPRINTER":    "Soul Sprinter",
+    "LYTE RUNNER":      "Lyte Runner",
+    "NORTH STAR":       "North Star",
+    "ARTIC FOX":        "Artic Fox",
+    "ARCTIC FOX":       "Artic Fox",
+    "K FLIP":           "K Flip",
+    "K-FLIP":           "K Flip",
+    "KFLIP":            "K Flip",
+    "BONESTA":          "Bonesta",
+    "BONEBA":           "Boneba",
+    "BONES":            "Bones",
+    "VULCAN/VULCANS":   "Vulcan/Vulcans",
+    "VULCANS":          "Vulcan/Vulcans",
+    "VULCAN":           "Vulcan/Vulcans",
+    "INVADER":          "Invader",
+    "ROCKSTAR":         "Rockstar",
+    "SKELETOR 2":       "Skeletor 2",
+    "SKELETOR":         "Skeletor",
+    "TRAILMAX":         "Trailmax",
+    "COSMOS":           "Cosmos",
+    "RAIDER":           "Raider",
+    "LOPRO/LOPROS":     "LoPro/LoPros",
+    "LOPROS":           "LoPro/LoPros",
+    "LOPRO":            "LoPro/LoPros",
+    "CONCORD":          "Concord",
+    "ANURAS":           "Anuras",
+    "ANURA":            "Anuras",
+    "7SVN7":            "7SVN7",
+    "CYBER":            "Cyber",
+}
+
+APPAREL_ALIASES = {
+    "BASKETBALL JERSEYS": "Basketball Jersey",
+    "BASKETBALL JERSEY":  "Basketball Jersey",
+    "BASEBALL JERSEYS":   "Baseball Jersey",
+    "BASEBALL JERSEY":    "Baseball Jersey",
+    "FOOTBALL JERSEYS":   "Football Jersey",
+    "FOOTBALL JERSEY":    "Football Jersey",
+    "HOCKEY JERSEYS":     "Hockey Jersey",
+    "HOCKEY JERSEY":      "Hockey Jersey",
+    "SOCCER JERSEYS":     "Soccer Jersey",
+    "SOCCER JERSEY":      "Soccer Jersey",
+    "MOVIE JERSEYS":      "Movie Jersey",
+    "MOVIE JERSEY":       "Movie Jersey",
+    "JERSEY DRESSES":     "Jersey Dress",
+    "JERSEY DRESS":       "Jersey Dress",
+    "BASKETBALL SHORTS":  "Basketball Shorts",
+    "BASKETBALL SHORT":   "Basketball Shorts",
+    "SATIN JACKETS":      "Satin Jacket",
+    "SATIN JACKET":       "Satin Jacket",
+    "VARSITY JACKETS":    "Varsity Jacket",
+    "VARSITY JACKET":     "Varsity Jacket",
+    "MOTO JACKETS":       "Moto Jacket",
+    "MOTO JACKET":        "Moto Jacket",
+    "RACING JACKETS":     "Racing Jackets",
+    "RACING JACKET":      "Racing Jackets",
+    "MINK JACKETS":       "Mink Jacket",
+    "MINK JACKET":        "Mink Jacket",
+    "DICKIES JACKETS":    "Dickies Jacket",
+    "DICKIES JACKET":     "Dickies Jacket",
+    "LEATHER JACKETS":    "Leather Jacket",
+    "LEATHER JACKET":     "Leather Jacket",
+    "SHERPA JACKETS":     "Sherpa Jacket",
+    "SHERPA JACKET":      "Sherpa Jacket",
+    "PUFFER JACKETS":     "Puffer Jacket/Vest",
+    "PUFFER JACKET":      "Puffer Jacket/Vest",
+    "PUFFER VESTS":       "Puffer Jacket/Vest",
+    "PUFFER VEST":        "Puffer Jacket/Vest",
+    "DENIM JACKETS":      "Denim Jacket",
+    "DENIM JACKET":       "Denim Jacket",
+    "WORK JACKETS":       "Work Jacket",
+    "WORK JACKET":        "Work Jacket",
+    "FLANNEL SHIRTS":     "Flannel Shirt",
+    "FLANNEL SHIRT":      "Flannel Shirt",
+    "WORK SHIRTS":        "Work Shirt",
+    "WORK SHIRT":         "Work Shirt",
+    "SATIN PANTS":        "Satin Pants",
+    "SATIN PANT":         "Satin Pants",
+    "LONG SLEEVE TEES":   "Long Sleeve Tee",
+    "LONG SLEEVE TEE":    "Long Sleeve Tee",
+    "LONG SLEEVE TSHIRT": "Long Sleeve Tee",
+    "SWEATSUITS":         "Sweatsuit",
+    "SWEATSUIT":          "Sweatsuit",
+}
+
+ACCESSORY_ALIASES = {
+    "PANT CHAINS":  "Denim Chain",
+    "PANT CHAIN":   "Denim Chain",
+    "DENIM CHAINS": "Denim Chain",
+    "DENIM CHAIN":  "Denim Chain",
+    "SNAPBACKS":    "Snapback",
+    "SNAPBACK":     "Snapback",
+    "STRAPBACKS":   "Snapback",
+    "STRAPBACK":    "Snapback",
+    "BACKPACKS":    "Backpack",
+    "BACKPACK":     "Backpack",
+    "BOOKBAGS":     "Backpack",
+    "BOOKBAG":      "Backpack",
+    "DUFFLE BAGS":  "Duffle Bag",
+    "DUFFLE BAG":   "Duffle Bag",
+    "DUFFLE":       "Duffle Bag",
+    "LANYARDS":     "Lanyard",
+    "LANYARD":      "Lanyard",
+    "BEANIES":      "Beanie",
+    "BEANIE":       "Beanie",
+    "SOCKS":        "Socks",
+    "SOCK":         "Socks",
+    "PINS":         "Pin",
+    "PIN":          "Pin",
+    "RUGS":         "Rug",
+    "RUG":          "Rug",
+    "BELTS":        "Belts",
+    "BELT":         "Belts",
+    "FLAGS":        "Flag",
+    "FLAG":         "Flag",
+    "TRUCKER HAT":  "Hats",
+    "DAD HAT":      "Hats",
+    "DADHAT":       "Hats",
+    "HATS":         "Hats",
+    "HAT":          "Hats",
+}
+
+GENERIC_ALIASES = {
+    "T-SHIRTS":   "Tshirts",
+    "T-SHIRT":    "Tshirts",
+    "TSHIRTS":    "Tshirts",
+    "TSHIRT":     "Tshirts",
+    "HOODIES":    "Hoodie",
+    "HOODIE":     "Hoodie",
+    "SWEATPANTS": "Sweatpants",
+    "SWEATSHIRTS": "Sweatshirt",
+    "SWEATSHIRT": "Sweatshirt",
+    "SWEATERS":   "Sweater",
+    "SWEATER":    "Sweater",
+    "CROP TOPS":  "Crop Top",
+    "CROP TOP":   "Crop Top",
+    "POLOS":      "Polo",
+    "POLO":       "Polo",
+    "VESTS":      "Vest",
+    "VEST":       "Vest",
+    "SKIRTS":     "Skirt",
+    "SKIRT":      "Skirt",
+    "UNDERWEAR":  "Underwear",
+    "BOXERS":     "Boxers",
+    "BOXER":      "Boxers",
+    "DENIM":      "Denim",
+    "SHORTS":     "Shorts",
+    "SHORT":      "Shorts",
+    "PANTS":      "Pants",
+    "PANT":       "Pants",
+    "JERSEYS":    "Jerseys",
+    "JERSEY":     "Jerseys",
+    "SNEAKERS":   "Sneakers",
+    "SNEAKER":    "Sneakers",
+    "OUTERWEAR":  "Outerwear",
+    "JACKETS":    "Jackets",
+    "JACKET":     "Jackets",
+    "SHIRTS":     "Shirt",
+    "SHIRT":      "Shirt",
+}
+
+# Rock band names -> "Rock Tshirt" whenever the note also says TSHIRT.
+# (These don't fit a simple substring-of-category-name rule since the
+# category name "Rock Tshirt" itself never literally appears in a note.)
+ROCK_BANDS = {
+    "ACDC", "AC/DC", "AEROSMITH", "DEF LEPPARD", "KISS",
+    "MOTLEY CRUE", "M\u00d6TLEY CR\u00dcE", "MOTLEY CR\u00dcE", "M\u00d6TLEY CRUE",
+}
+
+
+def match_known_category_name(name):
+    """
+    If a plain-text product name contains one of our known category names
+    as a phrase (e.g. "JORDAN BASEBALL JERSEY" contains "BASEBALL JERSEY"),
+    route it into that shared category bucket instead of creating a one-off
+    bucket for the literal name.
+
+    Checked tier by tier (shoe lines -> apparel -> accessories -> generic),
+    with longest-match-wins WITHIN each tier - so "Court Classic 2" beats
+    "Court Classic", but a shoe line like "Bones" still correctly beats the
+    generic word "Sneakers" that usually follows it in the same note, since
+    shoe lines are checked as a whole tier before generic words are even
+    considered. Falls back to Rock Tshirt / Donation special cases, then
+    None if nothing matches at all.
+    """
+    name_upper = name.upper()
+
+    # Shoe lines and apparel first - both are "specific" tiers.
+    for tier in (SHOE_LINE_ALIASES, APPAREL_ALIASES):
+        best_match = None
+        for alias in tier:
+            if alias in name_upper:
+                if best_match is None or len(alias) > len(best_match):
+                    best_match = alias
+        if best_match:
+            return tier[best_match]
+
+    # Rock Tshirt: band name + "TSHIRT" together. Checked at the same
+    # priority as apparel (Rock Tshirt IS a Named Apparel category) -
+    # must run BEFORE the generic tier below, otherwise generic "TSHIRT"
+    # matches first and this check never gets a chance to run.
+    if "TSHIRT" in name_upper or "T-SHIRT" in name_upper:
+        for band in ROCK_BANDS:
+            if band in name_upper:
+                return "Rock Tshirt"
+
+    # Accessories, then generic categories.
+    for tier in (ACCESSORY_ALIASES, GENERIC_ALIASES):
+        best_match = None
+        for alias in tier:
+            if alias in name_upper:
+                if best_match is None or len(alias) > len(best_match):
+                    best_match = alias
+        if best_match:
+            return tier[best_match]
+
+    # Donation / charity items
+    if "DONATION" in name_upper or "CHARITY" in name_upper:
+        return "Donation"
+
+    return None
+
+
+SIZE_PATTERN = re.compile(r'[-\u2013\u2014]\s*Size\s+(\S+)$', re.IGNORECASE)
 STANDARD_SIZE_TOKEN = re.compile(r'^(XXS|XS|S|M|L|XL|XXL|XXXL|2XL|3XL|4XL|\d{1,3}(\.\d+)?)$', re.IGNORECASE)
 QTY_PREFIX_PATTERN = re.compile(r'^\(?\s*QTY?:?\s*\d+\s*\)?\s*', re.IGNORECASE)
 SKU_PREFIX_PATTERN = re.compile(r'^[A-Z0-9]+-[A-Z]+-', re.IGNORECASE)
@@ -186,8 +445,9 @@ def _parse_single_line_core(line):
         name = base.split('(')[0].strip().upper()
         color = extract_color(line)
         size = extract_size(line)
+        bucket_key = match_known_category_name(name) or OTHERS
         return {
-            "bucket_key": name,
+            "bucket_key": bucket_key,
             "name": name,
             "sku": "",
             "color": color,
@@ -202,14 +462,36 @@ def _parse_single_line_core(line):
     if size_match:
         name_part = SIZE_PATTERN.sub('', stripped).strip()
         if ' ' in name_part:
+            name_upper = name_part.upper()
+            bucket_key = match_known_category_name(name_upper) or OTHERS
             return {
-                "bucket_key": name_part.upper(),
-                "name": name_part.upper(),
+                "bucket_key": bucket_key,
+                "name": name_upper,
                 "sku": "",
                 "color": "",
                 "size": size_match.group(1),
                 "is_descriptive": True,
             }
+
+    # Bare descriptive name - no parens, no recognizable "- Size X" suffix,
+    # but still plain language (has a space) rather than a SKU code, e.g.
+    # "WOMEN'S RHINESTONE BELT" or "BLACK BOOST PIN". Very common for
+    # accessories, which often don't carry size/color info in the note at
+    # all. Try the full known-category match before giving up. A real match
+    # returns that category; no match still returns Others (not a one-off
+    # literal-name bucket) - is_junk_key() downstream is what decides if
+    # this should actually be NEEDS REVIEW instead (too short, a bare
+    # number, a stray fragment), independent of category matching.
+    if ' ' in stripped:
+        bucket_key = match_known_category_name(stripped.upper()) or OTHERS
+        return {
+            "bucket_key": bucket_key,
+            "name": stripped.upper(),
+            "sku": "",
+            "color": extract_color(line),
+            "size": extract_size(line),
+            "is_descriptive": True,
+        }
 
     # Last-resort SKU-style fallback - only for genuinely code-like text
     # (no spaces anywhere), since real SKUs were already caught above.
@@ -228,7 +510,7 @@ def _parse_single_line_core(line):
             "is_descriptive": False,
         }
 
-    # Neither format recognized
+    # Neither format recognized - single word, no dash, no space
     return {
         "bucket_key": NEEDS_REVIEW,
         "name": "",
@@ -298,6 +580,11 @@ def bucket_orders(orders):
         full detail on click
       - A single clean line -> one simple row, as before
       - All lines unparseable -> one row in Needs Review
+
+    This is enforced for real: the "Ship all in this bucket" button in the
+    dashboard collects every order_id shown in a bucket and ships each one
+    once. A duplicated order_id across two rows would mean two separate
+    label purchases for the same order.
     """
     buckets = {}
 
@@ -344,7 +631,8 @@ def bucket_orders(orders):
                 "total_amount": o.get("payment", {}).get("total_amount", ""),
             }
         else:
-            # Multiple lines in this order for this bucket - one row, expandable
+            # Multiple lines for this order in this bucket - ONE row,
+            # expandable, so "Ship all" only ever sees this order_id once.
             item = {
                 "order_id": o.get("id", ""),
                 "items_detail": [
