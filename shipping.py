@@ -3,7 +3,8 @@ Bulk shipping automation - purchases real labels via TikTok Shop's fulfillment A
 
 This is the exact 3-step pipeline manually verified end-to-end on real orders:
   1. Create Packages  - once per order (no batch version exists for this step)
-  2. Batch Ship Packages - one single call covering every package created above
+  2. Batch Ship Packages - chunked into groups of 50 (TikTok's hard per-call
+     limit on this endpoint - see batch_ship_packages below)
   3. Get Package Shipping Document - once per package (no batch version for this either)
 
 IMPORTANT: every call here is REAL. Create Packages genuinely purchases a label
@@ -17,7 +18,7 @@ import requests
 from datetime import datetime, timezone
 from io import BytesIO
 from pypdf import PdfReader, PdfWriter
-from tiktok_api import make_request, VERSION
+from tiktok_api import make_request, VERSION, get_order_details
 
 DOCUMENT_TYPE = "SHIPPING_LABEL_AND_PACKING_SLIP"
 HANDOVER_METHOD = "PICKUP"
@@ -47,8 +48,15 @@ def create_package(order_id):
 
 def batch_ship_packages(package_ids, handover_method=HANDOVER_METHOD):
     """
-    Step 2. Ships every package_id in ONE call. Response only lists failures -
-    any package_id not present in the returned errors list succeeded.
+    Step 2. Ships every package_id, chunked into batches of 50 - TikTok's
+    Batch Ship Packages endpoint rejects any single call with more than 50
+    packages ("Packages is invalid, check validation rule is: len($this) <=
+    50"). Buckets with 50+ orders (which happens regularly here) were
+    failing this ENTIRE step after packages had already been purchased in
+    Step 1 - real money spent, nothing shipped, no tracking numbers ever
+    retrieved. Chunking here keeps this function's external behavior
+    identical (call it once, whole list in) while staying under TikTok's
+    per-call limit internally.
 
     Returns (succeeded_ids, failed) where failed is a dict of
     package_id -> {code, message} for anything that failed.
@@ -57,30 +65,39 @@ def batch_ship_packages(package_ids, handover_method=HANDOVER_METHOD):
         return [], {}
 
     path = f"/fulfillment/{VERSION}/packages/ship"
-    body = {
-        "packages": [
-            {"id": pid, "handover_method": handover_method} for pid in package_ids
-        ]
-    }
-    data = make_request("POST", path, body=body, quiet=True)
+    all_succeeded = []
+    all_failed = {}
 
-    if data.get("code") != 0:
-        # The whole batch call itself failed - treat every package as failed
-        failed = {
-            pid: {"code": data.get("code"), "message": data.get("message", "Batch ship call failed")}
-            for pid in package_ids
+    CHUNK_SIZE = 50
+    for i in range(0, len(package_ids), CHUNK_SIZE):
+        chunk = package_ids[i:i + CHUNK_SIZE]
+        body = {
+            "packages": [
+                {"id": pid, "handover_method": handover_method} for pid in chunk
+            ]
         }
-        return [], failed
+        data = make_request("POST", path, body=body, quiet=True)
 
-    errors = data.get("data", {}).get("errors", [])
-    failed = {}
-    for err in errors:
-        pid = err.get("detail", {}).get("package_id")
-        if pid:
-            failed[pid] = {"code": err.get("code"), "message": err.get("message")}
+        if data.get("code") != 0:
+            # Only THIS chunk failed - other chunks are unaffected.
+            for pid in chunk:
+                all_failed[pid] = {"code": data.get("code"), "message": data.get("message", "Batch ship call failed")}
+            continue
 
-    succeeded_ids = [pid for pid in package_ids if pid not in failed]
-    return succeeded_ids, failed
+        errors = data.get("data", {}).get("errors", [])
+        chunk_failed_ids = set()
+        for err in errors:
+            pid = err.get("detail", {}).get("package_id")
+            if pid:
+                all_failed[pid] = {"code": err.get("code"), "message": err.get("message")}
+                chunk_failed_ids.add(pid)
+
+        all_succeeded.extend(pid for pid in chunk if pid not in chunk_failed_ids)
+
+        if i + CHUNK_SIZE < len(package_ids):
+            time.sleep(0.3)  # small pacing buffer between batch calls
+
+    return all_succeeded, all_failed
 
 
 def get_shipping_document(package_id):
@@ -181,8 +198,8 @@ def ship_orders(items, progress_callback=None):
     if not package_ids:
         return list(results.values())
 
-    # --- Step 2: Batch Ship, one call for everything created above ---
-    report(f"Shipping {len(package_ids)} package(s) in one batch call...")
+    # --- Step 2: Batch Ship, chunked into groups of 50 (see function above) ---
+    report(f"Shipping {len(package_ids)} package(s)...")
     succeeded_pkg_ids, failed_pkgs = batch_ship_packages(package_ids)
 
     package_to_order = {v: k for k, v in order_to_package.items()}
@@ -313,3 +330,124 @@ def get_shipping_history(search="", limit=200):
 
     entries.reverse()  # most recent first
     return entries[:limit]
+
+
+def _find_orders_needing_reconciliation():
+    """
+    Walk shipping_history.jsonl and return the order_ids whose MOST RECENT
+    entry shows success=False. Since the log is append-only in chronological
+    order, the last occurrence of each order_id in the file is its current
+    status - an order that failed once but later succeeded (or was already
+    reconciled) is correctly excluded. Internal helper for
+    reconcile_failed_orders() below.
+    """
+    if not os.path.exists(SHIPPING_LOG_FILE):
+        return []
+
+    last_status = {}
+    with open(SHIPPING_LOG_FILE, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            oid = entry.get("order_id")
+            if oid:
+                last_status[oid] = entry.get("success", False)
+
+    return [oid for oid, success in last_status.items() if not success]
+
+
+def reconcile_failed_orders():
+    """
+    Finds every order whose most recent Shipping History entry shows
+    failure, checks TikTok's real current status for each, and fixes any
+    that actually shipped - this happened for any bucket over 50 orders
+    before batch_ship_packages was fixed to chunk properly: TikTok's
+    batch-ship call rejected the whole request for exceeding its 50-package
+    limit, but on TikTok's side some/all of those packages had ALREADY been
+    processed and shipped by the time the error came back, leaving the log
+    incorrectly showing "Failed" for orders that are actually fine.
+
+    Shared by both the dashboard's "Reconcile failed orders" button
+    (server.py's /api/reconcile) and the standalone reconcile_shipping.py
+    script, so there's exactly one implementation of this logic to trust.
+
+    Safe to call/re-run any time - it only ever looks at orders whose
+    latest record is still a failure, so already-reconciled orders are
+    automatically skipped on the next call.
+
+    Returns a dict:
+    {
+        "checked": int,                     - how many failed orders were checked
+        "fixed": [order_id, ...],           - confirmed shipped, now corrected
+        "still_unshipped": [order_id, ...], - confirmed still needs real shipping
+        "not_found": [order_id, ...],       - TikTok couldn't return this order at all
+        "combined_pdf_filename": str/None,  - reprintable labels for the fixed ones
+    }
+    """
+    failed_ids = _find_orders_needing_reconciliation()
+
+    result = {
+        "checked": len(failed_ids),
+        "fixed": [],
+        "still_unshipped": [],
+        "not_found": [],
+        "combined_pdf_filename": None,
+    }
+
+    if not failed_ids:
+        return result
+
+    real_orders = get_order_details(failed_ids)
+    real_orders_by_id = {o.get("id"): o for o in real_orders}
+
+    actually_shipped = []
+
+    for oid in failed_ids:
+        order = real_orders_by_id.get(oid)
+        if not order:
+            result["not_found"].append(oid)
+            continue
+
+        status = order.get("status", "")
+        tracking = order.get("tracking_number", "")
+
+        if status != "AWAITING_SHIPMENT" and tracking:
+            actually_shipped.append(order)
+        else:
+            result["still_unshipped"].append(oid)
+
+    if actually_shipped:
+        ship_results = []
+        for order in actually_shipped:
+            oid = order.get("id")
+            packages = order.get("packages", [])
+            pkg_id = packages[0]["id"] if packages else None
+
+            entry = {
+                "order_id": oid,
+                "full_note": order.get("seller_note", ""),
+                "success": True,
+                "tracking_number": order.get("tracking_number", ""),
+                "doc_url": None,
+                "reconciled": True,  # marks this as backfilled from a status check, not a live ship
+            }
+
+            if pkg_id:
+                doc_success, doc_data = get_shipping_document(pkg_id)
+                if doc_success:
+                    entry["doc_url"] = doc_data.get("doc_url")
+                time.sleep(0.2)
+
+            ship_results.append(entry)
+            result["fixed"].append(oid)
+
+        combined_filename, included, skipped = build_combined_label_pdf(ship_results, "RECONCILED")
+        log_shipping_results(ship_results, "RECONCILED", combined_filename)
+        result["combined_pdf_filename"] = combined_filename
+
+    return result

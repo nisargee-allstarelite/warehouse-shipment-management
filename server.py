@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 
 import tiktok_api
 from bucketing import bucket_orders
-from shipping import ship_orders, build_combined_label_pdf, log_shipping_results, get_shipping_history, LABELS_DIR
+from shipping import ship_orders, build_combined_label_pdf, log_shipping_results, get_shipping_history, reconcile_failed_orders, LABELS_DIR
 
 load_dotenv()
 
@@ -264,6 +264,32 @@ def api_shipping_history():
     search = request.args.get("search", "")
     entries = get_shipping_history(search=search, limit=300)
     return jsonify({"entries": entries, "count": len(entries)})
+
+
+@app.route("/api/reconcile", methods=["POST"])
+def api_reconcile():
+    """
+    Checks every order currently marked as failed in Shipping History
+    against TikTok's real current status, and fixes any that actually
+    shipped despite our record showing a failure - see
+    shipping.reconcile_failed_orders() for the full story on why this
+    happens (TikTok's 50-package batch-ship limit). Same logic as
+    reconcile_shipping.py, exposed here so it's a dashboard button instead
+    of an SSH-only script.
+
+    This makes real API calls for every currently-failed order, so it can
+    take a while if there are many - the frontend should show a loading
+    state, not assume this returns instantly.
+    """
+    result = reconcile_failed_orders()
+    return jsonify({
+        "checked": result["checked"],
+        "fixed_count": len(result["fixed"]),
+        "fixed_order_ids": result["fixed"],
+        "still_unshipped": result["still_unshipped"],
+        "not_found": result["not_found"],
+        "combined_pdf_url": f"/api/labels/{result['combined_pdf_filename']}" if result["combined_pdf_filename"] else None,
+    })
 
 
 if __name__ == "__main__":

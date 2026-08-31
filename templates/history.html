@@ -61,6 +61,15 @@
     cursor: pointer;
   }
   button:hover { opacity: 0.9; }
+  button:disabled {
+    background: #d1d5db;
+    cursor: not-allowed;
+  }
+  button.secondary {
+    background: transparent;
+    color: var(--accent);
+    border: 1px solid var(--accent);
+  }
   #status-line {
     font-size: 13px;
     color: var(--muted);
@@ -121,7 +130,7 @@
     padding: 60px 0;
     display: none;
   }
-  #modal-overlay {
+  #modal-overlay, #reconcile-modal-overlay {
     display: none;
     position: fixed;
     inset: 0;
@@ -130,8 +139,8 @@
     align-items: center;
     justify-content: center;
   }
-  #modal-overlay.open { display: flex; }
-  #modal-box {
+  #modal-overlay.open, #reconcile-modal-overlay.open { display: flex; }
+  #modal-box, #reconcile-modal-box {
     background: var(--card);
     border-radius: 12px;
     padding: 24px;
@@ -140,7 +149,7 @@
     max-height: 80vh;
     overflow-y: auto;
   }
-  #modal-box h2 { margin: 0 0 12px 0; font-size: 16px; }
+  #modal-box h2, #reconcile-modal-box h2 { margin: 0 0 12px 0; font-size: 16px; }
   #modal-box pre {
     white-space: pre-wrap;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -150,7 +159,15 @@
     border-radius: 8px;
     line-height: 1.6;
   }
-  #modal-close { margin-top: 16px; }
+  #modal-close, #reconcile-modal-close { margin-top: 16px; }
+  .reconcile-result-line {
+    padding: 8px 0;
+    border-bottom: 1px dashed var(--border);
+    font-size: 13px;
+  }
+  .reconcile-result-line:last-child { border-bottom: none; }
+  .reconcile-fixed { color: #166534; }
+  .reconcile-unshipped { color: #b91c1c; }
 </style>
 </head>
 <body>
@@ -165,7 +182,10 @@
 
 <div class="top-bar">
   <input id="search" placeholder="Search by order ID, product, tracking number, or bucket..." oninput="onSearchInput()">
-  <span id="status-line">Loading...</span>
+  <div>
+    <span id="status-line">Loading...</span>
+    <button class="secondary" id="reconcile-btn" onclick="runReconcile()">Reconcile failed orders</button>
+  </div>
 </div>
 
 <table>
@@ -189,6 +209,14 @@
     <h2 id="modal-title"></h2>
     <pre id="modal-content"></pre>
     <button id="modal-close" onclick="closeModal(event)">Close</button>
+  </div>
+</div>
+
+<div id="reconcile-modal-overlay" onclick="closeReconcileModal(event)">
+  <div id="reconcile-modal-box">
+    <h2 id="reconcile-modal-title">Reconcile Results</h2>
+    <div id="reconcile-modal-content"></div>
+    <button id="reconcile-modal-close" onclick="closeReconcileModal(event)">Close</button>
   </div>
 </div>
 
@@ -271,6 +299,68 @@ function openNoteModal(idx) {
 function closeModal(event) {
   if (event.target.id === "modal-overlay" || event.target.id === "modal-close") {
     document.getElementById("modal-overlay").classList.remove("open");
+  }
+}
+
+async function runReconcile() {
+  const btn = document.getElementById("reconcile-btn");
+  const originalText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Checking with TikTok... this can take a minute";
+
+  try {
+    const res = await fetch("/api/reconcile", { method: "POST" });
+    const data = await res.json();
+    showReconcileResults(data);
+    loadHistory();  // refresh the table so any corrected entries show up immediately
+  } catch (err) {
+    alert("Something went wrong: " + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = originalText;
+  }
+}
+
+function showReconcileResults(data) {
+  const content = document.getElementById("reconcile-modal-content");
+
+  if (data.checked === 0) {
+    content.innerHTML = `<p>No failed orders to check right now - everything's already up to date.</p>`;
+    document.getElementById("reconcile-modal-overlay").classList.add("open");
+    return;
+  }
+
+  let html = `<p style="margin-bottom:12px">Checked ${data.checked} failed order(s) against TikTok's real status:</p>`;
+
+  if (data.fixed_count > 0) {
+    html += `<div class="reconcile-result-line reconcile-fixed">
+      ✅ ${data.fixed_count} order(s) had actually shipped - records corrected.
+    </div>`;
+  }
+  if (data.still_unshipped.length > 0) {
+    html += `<div class="reconcile-result-line reconcile-unshipped">
+      ⚠️ ${data.still_unshipped.length} order(s) confirmed still NOT shipped - these need real action:
+      <div class="muted" style="margin-top:4px">${data.still_unshipped.join(", ")}</div>
+    </div>`;
+  }
+  if (data.not_found.length > 0) {
+    html += `<div class="reconcile-result-line">
+      ${data.not_found.length} order(s) could not be found at all: ${data.not_found.join(", ")}
+    </div>`;
+  }
+  if (data.combined_pdf_url) {
+    html += `<a class="label-link" href="${data.combined_pdf_url}" target="_blank" style="display:inline-block; margin-top:12px;">
+      Download reprintable labels for the corrected orders
+    </a>`;
+  }
+
+  content.innerHTML = html;
+  document.getElementById("reconcile-modal-overlay").classList.add("open");
+}
+
+function closeReconcileModal(event) {
+  if (event.target.id === "reconcile-modal-overlay" || event.target.id === "reconcile-modal-close") {
+    document.getElementById("reconcile-modal-overlay").classList.remove("open");
   }
 }
 
