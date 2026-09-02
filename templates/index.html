@@ -147,7 +147,6 @@
     padding: 60px 0;
     display: none;
   }
-  /* Modal for full note detail */
   #modal-overlay {
     display: none;
     position: fixed;
@@ -269,7 +268,7 @@
 
 <script>
 let currentData = { buckets: [] };
-let selectedOrders = {}; // bucketKey -> Set of order_ids currently checked
+let selectedOrders = {};
 
 function bucketDetailId(key) {
   return "detail-" + btoa(unescape(encodeURIComponent(key))).replace(/[^a-zA-Z0-9]/g, "");
@@ -313,21 +312,14 @@ function renderBuckets() {
     card.className = "bucket-card";
 
     const detailId = bucketDetailId(bucket.key);
-
-    // Bundles and Needs Review need a human to look at the actual note
-    // before shipping - no bulk-ship button (and no checkboxes) on those,
-    // only real product category buckets get them.
     const isShippable = !bucket.key.includes("BUNDLES") && !bucket.key.includes("NEEDS REVIEW");
 
     const itemsHtml = bucket.items.slice(0, 200).map((item, idx) => {
-      // Every row is clickable -> opens a popup with the exact original note.
       const clickAttr = `onclick="event.stopPropagation(); openNoteModal('${detailId}', ${idx})"`;
-
       const isChecked = selectedOrders[bucket.key]?.has(item.order_id) ? "checked" : "";
       const checkboxHtml = isShippable ? `<input type="checkbox" class="item-checkbox" ${isChecked} onclick="event.stopPropagation(); toggleOrderSelection('${bucket.key}', '${item.order_id}', this.checked, '${detailId}')">` : "";
 
       if (item.items_detail) {
-        // Multiple lines for this order in this bucket - compact summary, full detail on click
         return `
           <div class="item-row" ${clickAttr}>
             ${checkboxHtml}<span class="order-id">Order ${item.order_id}</span>
@@ -444,18 +436,37 @@ async function doShip(bucketKey, detailId, orderIds, btnId) {
   const btn = document.getElementById(btnId);
   const originalText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "Shipping... please wait";
+  btn.textContent = "Starting...";
 
   try {
     const body = { bucket_key: bucketKey };
     if (orderIds) body.order_ids = orderIds;
 
-    const res = await fetch("/api/ship_bucket", {
+    const startRes = await fetch("/api/ship_bucket", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    const data = await res.json();
+    const startData = await startRes.json();
+
+    if (startData.error) {
+      alert("Error: " + startData.error);
+      return;
+    }
+
+    const jobId = startData.job_id;
+    btn.textContent = "Shipping in progress - this can take a minute for large batches, please wait...";
+
+    let data;
+    while (true) {
+      await new Promise(r => setTimeout(r, 2000));
+      const statusRes = await fetch(`/api/job_status/${jobId}`);
+      const statusData = await statusRes.json();
+      if (statusData.status === "done") {
+        data = statusData.response;
+        break;
+      }
+    }
 
     if (data.error) {
       alert("Error: " + data.error);
@@ -469,7 +480,7 @@ async function doShip(bucketKey, detailId, orderIds, btnId) {
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
-    setTimeout(loadData, 2000);  // let the background refresh catch up
+    setTimeout(loadData, 1000);
   }
 }
 

@@ -13,6 +13,7 @@ import json
 import os
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 
 from flask import Flask, jsonify, request, render_template, send_from_directory, session, redirect, url_for
@@ -77,6 +78,33 @@ state = {
     "total_orders": 0,
     "is_polling": False,
 }
+
+
+# --- Async job tracking for long-running operations (ship / reconcile) ---
+#
+# Both shipping a bucket and reconciling failed orders make one real network
+# call to TikTok PER ORDER (Create Package, Get Document, etc.) - for even a
+# moderate bucket (30-40 orders) this can genuinely take 30-60+ seconds,
+# which is long enough for Nginx's proxy timeout to give up and hand the
+# browser an HTML error page instead of the real JSON response. When that
+# happened for real on a 31-order Tshirts bucket, the frontend saw the
+# error, re-enabled its button, and the person (reasonably) clicked "Ship
+# all" again - except the FIRST attempt was still running successfully in
+# the background the whole time, so the second attempt hit TikTok with the
+# same order IDs and got rejected as "already shipped." Nothing actually
+# failed, but it looked like total chaos in Shipping History.
+#
+# Fix: the start endpoint returns a job_id INSTANTLY (before doing any real
+# work) and the frontend polls a separate, always-fast status endpoint
+# instead of waiting on one long request. Neither request type can ever be
+# the slow one, so neither can ever time out. On top of that,
+# active_ship_buckets blocks a second concurrent shipping job for the same
+# bucket outright - even a confused double-click can no longer trigger the
+# duplicate-attempt cascade, independent of any frontend timing.
+jobs_lock = threading.Lock()
+jobs = {}                      # job_id -> {"status": "running"|"done", "response": {...} or None}
+active_ship_buckets = set()    # bucket_keys currently mid-ship
+reconcile_state = {"in_progress": False}
 
 
 def load_state():
@@ -213,7 +241,7 @@ def api_merge():
 @app.route("/api/ship_bucket", methods=["POST"])
 def api_ship_bucket():
     """
-    Purchases REAL shipping labels for orders in the given bucket, using the
+    Starts shipping REAL labels for orders in the given bucket, using the
     verified 3-step pipeline (Create Packages -> Batch Ship -> Get Document).
     This spends real money the moment it runs - the frontend is responsible
     for confirming with the person before calling this endpoint.
@@ -222,6 +250,14 @@ def api_ship_bucket():
     body includes "order_ids" (a specific list, from checkbox multi-select
     in the UI), only those orders are shipped instead - everything else in
     the bucket is left alone.
+
+    Returns a job_id IMMEDIATELY - the actual shipping work (one real
+    network call per order, per step) happens in a background thread and
+    can take a while for larger buckets. Poll /api/job_status/<job_id> for
+    the result. Rejects the request outright with 409 if a shipping job for
+    this exact bucket is already running, to make double-submission
+    (accidental double-click, or a retry after a misleading timeout error)
+    structurally impossible rather than just unlikely.
     """
     data = request.get_json()
     bucket_key = data.get("bucket_key")
@@ -236,22 +272,45 @@ def api_ship_bucket():
     if not items:
         return jsonify({"error": "No orders found in that bucket"}), 400
 
-    results = ship_orders(items)
+    with jobs_lock:
+        if bucket_key in active_ship_buckets:
+            return jsonify({
+                "error": f'A shipping job for "{bucket_key}" is already in progress. '
+                         f'Please wait for it to finish - this prevents accidentally '
+                         f'shipping the same orders twice.'
+            }), 409
+        active_ship_buckets.add(bucket_key)
 
-    combined_filename, included_orders, skipped_orders = build_combined_label_pdf(results, bucket_key)
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {"status": "running", "response": None}
 
-    log_shipping_results(results, bucket_key, combined_filename)
+    def run_job():
+        try:
+            results = ship_orders(items)
+            combined_filename, included_orders, skipped_orders = build_combined_label_pdf(results, bucket_key)
+            log_shipping_results(results, bucket_key, combined_filename)
+            response = {
+                "results": results,
+                "combined_pdf_url": f"/api/labels/{combined_filename}" if combined_filename else None,
+                "combined_pdf_page_count": len(included_orders),
+                "combined_pdf_skipped": skipped_orders,
+            }
+            with jobs_lock:
+                jobs[job_id] = {"status": "done", "response": response}
+        except Exception as e:
+            with jobs_lock:
+                jobs[job_id] = {"status": "done", "response": {"error": str(e)}}
+        finally:
+            with jobs_lock:
+                active_ship_buckets.discard(bucket_key)
+            # Refresh right away so shipped orders drop out of the queue
+            # immediately instead of waiting for the next scheduled poll.
+            threading.Thread(target=poll_once, daemon=True).start()
 
-    # Refresh right away so shipped orders drop out of the queue immediately
-    # instead of waiting for the next scheduled poll.
-    threading.Thread(target=poll_once, daemon=True).start()
+    threading.Thread(target=run_job, daemon=True).start()
 
-    return jsonify({
-        "results": results,
-        "combined_pdf_url": f"/api/labels/{combined_filename}" if combined_filename else None,
-        "combined_pdf_page_count": len(included_orders),
-        "combined_pdf_skipped": skipped_orders,
-    })
+    return jsonify({"job_id": job_id, "status": "started"})
 
 
 @app.route("/api/labels/<path:filename>")
@@ -269,27 +328,62 @@ def api_shipping_history():
 @app.route("/api/reconcile", methods=["POST"])
 def api_reconcile():
     """
-    Checks every order currently marked as failed in Shipping History
-    against TikTok's real current status, and fixes any that actually
+    Starts a check of every order currently marked as failed in Shipping
+    History against TikTok's real current status, fixing any that actually
     shipped despite our record showing a failure - see
     shipping.reconcile_failed_orders() for the full story on why this
-    happens (TikTok's 50-package batch-ship limit). Same logic as
-    reconcile_shipping.py, exposed here so it's a dashboard button instead
-    of an SSH-only script.
+    happens.
 
-    This makes real API calls for every currently-failed order, so it can
-    take a while if there are many - the frontend should show a loading
-    state, not assume this returns instantly.
+    Same async job pattern as /api/ship_bucket and for the same reason:
+    checking many failed orders makes one real network call per order and
+    can take a while, so this returns a job_id immediately rather than
+    risking the same timeout/retry problem. Rejects with 409 if a
+    reconciliation check is already running.
     """
-    result = reconcile_failed_orders()
-    return jsonify({
-        "checked": result["checked"],
-        "fixed_count": len(result["fixed"]),
-        "fixed_order_ids": result["fixed"],
-        "still_unshipped": result["still_unshipped"],
-        "not_found": result["not_found"],
-        "combined_pdf_url": f"/api/labels/{result['combined_pdf_filename']}" if result["combined_pdf_filename"] else None,
-    })
+    with jobs_lock:
+        if reconcile_state["in_progress"]:
+            return jsonify({"error": "A reconciliation check is already in progress. Please wait for it to finish."}), 409
+        reconcile_state["in_progress"] = True
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {"status": "running", "response": None}
+
+    def run_job():
+        try:
+            result = reconcile_failed_orders()
+            response = {
+                "checked": result["checked"],
+                "fixed_count": len(result["fixed"]),
+                "fixed_order_ids": result["fixed"],
+                "still_unshipped": result["still_unshipped"],
+                "not_found": result["not_found"],
+                "combined_pdf_url": f"/api/labels/{result['combined_pdf_filename']}" if result["combined_pdf_filename"] else None,
+            }
+            with jobs_lock:
+                jobs[job_id] = {"status": "done", "response": response}
+        except Exception as e:
+            with jobs_lock:
+                jobs[job_id] = {"status": "done", "response": {"error": str(e)}}
+        finally:
+            with jobs_lock:
+                reconcile_state["in_progress"] = False
+
+    threading.Thread(target=run_job, daemon=True).start()
+
+    return jsonify({"job_id": job_id, "status": "started"})
+
+
+@app.route("/api/job_status/<job_id>")
+def api_job_status(job_id):
+    """Shared polling endpoint for both /api/ship_bucket and /api/reconcile
+    jobs - always fast (just a dict lookup), so this request itself can
+    never be the one that times out."""
+    with jobs_lock:
+        job = jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Unknown job_id"}), 404
+    return jsonify(job)
 
 
 if __name__ == "__main__":
