@@ -12,5 +12,8 @@ venv/
 .venv/
 
 # OS
-.DS_Storeserver.log
+.DS_Store
+
+# Logs and data
+server.log
 shipping_history.jsonl
