@@ -10,3 +10,11 @@ Polling every 300 seconds in the background.
  * Running on http://172.31.38.154:5050
 [33mPress CTRL+C to quit[0m
   Done - 245 orders across 19 buckets.
+127.0.0.1 - - [08/Sep/2026 13:17:00] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:17:15] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:17:30] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:17:46] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:18:01] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:18:16] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:18:31] "GET /api/buckets HTTP/1.1" 200 -
+127.0.0.1 - - [08/Sep/2026 13:18:47] "GET /api/buckets HTTP/1.1" 200 -
