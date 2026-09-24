@@ -109,6 +109,19 @@
     overflow-y: auto;
   }
   .bucket-detail.open { display: block; }
+  .select-all-row {
+    padding: 4px 0 8px 0;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 4px;
+  }
+  .select-all-row label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--muted);
+    cursor: pointer;
+  }
   .item-row {
     font-size: 12px;
     color: var(--muted);
@@ -269,9 +282,25 @@
 <script>
 let currentData = { buckets: [] };
 let selectedOrders = {};
+// Which bucket detail panels are currently open, by detailId. Checked at
+// render time so the periodic background refresh (every 15s) doesn't wipe
+// out what the person had open - previously every renderBuckets() call
+// rebuilt the grid from scratch and lost this, making buckets snap shut on
+// their own. This resets naturally on page reload or a fresh login, since
+// it's just an in-memory JS variable - no extra logic needed for those.
+let openBuckets = new Set();
 
 function bucketDetailId(key) {
   return "detail-" + btoa(unescape(encodeURIComponent(key))).replace(/[^a-zA-Z0-9]/g, "");
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function timeAgo(isoString) {
@@ -313,6 +342,19 @@ function renderBuckets() {
 
     const detailId = bucketDetailId(bucket.key);
     const isShippable = !bucket.key.includes("BUNDLES") && !bucket.key.includes("NEEDS REVIEW");
+    const isOpen = openBuckets.has(detailId);
+
+    const allSelected = isShippable && bucket.items.length > 0 &&
+      bucket.items.every(item => selectedOrders[bucket.key]?.has(item.order_id));
+
+    const selectAllHtml = isShippable ? `
+      <div class="select-all-row" onclick="event.stopPropagation()">
+        <label>
+          <input type="checkbox" ${allSelected ? "checked" : ""} onclick="toggleSelectAll('${bucket.key}', this.checked)">
+          Select all
+        </label>
+      </div>
+    ` : "";
 
     const itemsHtml = bucket.items.slice(0, 200).map((item, idx) => {
       const clickAttr = `onclick="event.stopPropagation(); openNoteModal('${detailId}', ${idx})"`;
@@ -344,6 +386,17 @@ function renderBuckets() {
       .map(k => `<option value="${k}">${k}</option>`)
       .join("");
 
+    const packingRowHtml = isShippable ? `
+      <div class="ship-row" onclick="event.stopPropagation()">
+        <button class="secondary" onclick="printPackingSlipSelected('${bucket.key}')">
+          Print packing slip (selected)
+        </button>
+        <button class="secondary" onclick="printPackingSlipAll('${bucket.key}')">
+          Print packing slip (all ${bucket.count})
+        </button>
+      </div>
+    ` : "";
+
     const shipRowHtml = isShippable ? `
       <div class="ship-row" onclick="event.stopPropagation()">
         <button class="ship-btn secondary" id="ship-selected-btn-${detailId}" onclick="shipSelected('${bucket.key}', '${detailId}')">
@@ -360,7 +413,8 @@ function renderBuckets() {
         <div class="bucket-name">${bucket.key}</div>
         <div class="bucket-count">${bucket.count}</div>
       </div>
-      <div class="bucket-detail" id="${detailId}">
+      <div class="bucket-detail${isOpen ? " open" : ""}" id="${detailId}">
+        ${selectAllHtml}
         ${itemsHtml}
         <div class="merge-row" onclick="event.stopPropagation()">
           <select id="merge-target-${detailId}">
@@ -369,6 +423,7 @@ function renderBuckets() {
           </select>
           <button onclick="mergeBucket('${bucket.key}', '${detailId}')">Merge</button>
         </div>
+        ${packingRowHtml}
         ${shipRowHtml}
       </div>
     `;
@@ -377,7 +432,13 @@ function renderBuckets() {
 }
 
 function toggleDetail(id) {
-  document.getElementById(id).classList.toggle("open");
+  const el = document.getElementById(id);
+  el.classList.toggle("open");
+  if (el.classList.contains("open")) {
+    openBuckets.add(id);
+  } else {
+    openBuckets.delete(id);
+  }
 }
 
 function toggleOrderSelection(bucketKey, orderId, checked, detailId) {
@@ -389,6 +450,22 @@ function toggleOrderSelection(bucketKey, orderId, checked, detailId) {
   }
   const countSpan = document.getElementById("selected-count-" + detailId);
   if (countSpan) countSpan.textContent = selectedOrders[bucketKey].size;
+}
+
+function toggleSelectAll(bucketKey, checked) {
+  const bucket = currentData.buckets.find(b => b.key === bucketKey);
+  if (!bucket) return;
+  if (!selectedOrders[bucketKey]) selectedOrders[bucketKey] = new Set();
+
+  if (checked) {
+    bucket.items.forEach(item => selectedOrders[bucketKey].add(item.order_id));
+  } else {
+    selectedOrders[bucketKey].clear();
+  }
+  // Full re-render to keep every individual checkbox, the selected count,
+  // and this select-all box itself all in sync - the bucket stays open
+  // since its detailId is already in openBuckets from being clicked into.
+  renderBuckets();
 }
 
 function openNoteModal(detailId, itemIdx) {
@@ -423,6 +500,125 @@ async function mergeBucket(fromKey, detailId) {
 async function refreshNow() {
   await fetch("/api/refresh", { method: "POST" });
   setTimeout(loadData, 1000);
+}
+
+// --- Packing slips (client-side only - no API call needed, since every
+// field it needs is already sitting in currentData from the last poll) ---
+
+function buildPackingSlipLines(bucket, orderIds) {
+  let items = bucket.items;
+  if (orderIds) {
+    const idSet = new Set(orderIds);
+    items = items.filter(item => idSet.has(item.order_id));
+  }
+
+  const lines = [];
+  items.forEach(item => {
+    if (item.items_detail) {
+      // Bundled/multi-line order - one packing-slip line per item inside it,
+      // each with its own stored quantity.
+      item.items_detail.forEach(detail => {
+        lines.push({
+          order_id: item.order_id,
+          name: detail.name || detail.sku || "",
+          sku: detail.sku || "",
+          size: detail.size || "",
+          qty: detail.qty || 1,
+        });
+      });
+    } else {
+      lines.push({
+        order_id: item.order_id,
+        name: item.name || item.sku || "",
+        sku: item.sku || "",
+        size: item.size || "",
+        qty: 1,
+      });
+    }
+  });
+  return lines;
+}
+
+function printPackingSlip(bucketKey, orderIds) {
+  const bucket = currentData.buckets.find(b => b.key === bucketKey);
+  if (!bucket) return;
+
+  const lines = buildPackingSlipLines(bucket, orderIds);
+  if (lines.length === 0) {
+    alert("No orders to include in this packing slip.");
+    return;
+  }
+
+  const orderCount = orderIds ? orderIds.length : bucket.items.length;
+
+  const rowsHtml = lines.map(l => `
+    <tr>
+      <td>${escapeHtml(l.order_id)}</td>
+      <td>${escapeHtml(l.name)}</td>
+      <td>${escapeHtml(l.sku)}</td>
+      <td>${escapeHtml(l.size)}</td>
+      <td>${l.qty}</td>
+    </tr>
+  `).join("");
+
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>Packing Slip - ${escapeHtml(bucketKey)}</title>
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; padding: 24px; color: #1a1d23; }
+        h1 { font-size: 18px; margin: 0 0 4px 0; }
+        .meta { color: #6b7280; font-size: 13px; margin-bottom: 16px; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e3e5e9; font-size: 13px; }
+        th { background: #f6f7f9; text-transform: uppercase; font-size: 11px; color: #6b7280; letter-spacing: 0.03em; }
+        @media print { body { padding: 0; } }
+      </style>
+    </head>
+    <body>
+      <h1>Packing Slip — ${escapeHtml(bucketKey)}</h1>
+      <div class="meta">${lines.length} line item(s) across ${orderCount} order(s) — generated ${new Date().toLocaleString()}</div>
+      <table>
+        <thead>
+          <tr><th>Order #</th><th>Style / Name</th><th>SKU</th><th>Size</th><th>Qty</th></tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </body>
+    </html>
+  `;
+
+  const win = window.open("", "_blank");
+  if (!win) {
+    alert("Your browser blocked the new tab - please allow popups for this site and try again.");
+    return;
+  }
+  win.document.write(html);
+  win.document.close();
+  // Triggering print from the PARENT window's script, rather than embedding
+  // a script tag inside the string above, avoids a real HTML-parsing trap:
+  // a browser (and any code editor's HTML parser) treats the literal
+  // closing-script-tag text as ending the CURRENT script block the instant
+  // it appears - even sitting inside a quoted string or a comment. Writing
+  // that closing tag literally inside this template literal would have
+  // prematurely ended this page's own main script block partway through
+  // the file, silently breaking every function defined after it.
+  win.onload = () => win.print();
+}
+
+function printPackingSlipAll(bucketKey) {
+  printPackingSlip(bucketKey, null);
+}
+
+function printPackingSlipSelected(bucketKey) {
+  const ids = Array.from(selectedOrders[bucketKey] || []);
+  if (ids.length === 0) {
+    alert("No orders selected - check the boxes next to the orders you want to include first.");
+    return;
+  }
+  printPackingSlip(bucketKey, ids);
 }
 
 async function doShip(bucketKey, detailId, orderIds, btnId) {
