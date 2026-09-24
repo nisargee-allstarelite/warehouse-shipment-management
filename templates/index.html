@@ -610,6 +610,8 @@ function printPackingSlip(bucketKey, orderIds) {
 
 function printPackingSlipAll(bucketKey) {
   printPackingSlip(bucketKey, null);
+  if (selectedOrders[bucketKey]) selectedOrders[bucketKey].clear();
+  renderBuckets();
 }
 
 function printPackingSlipSelected(bucketKey) {
@@ -619,6 +621,8 @@ function printPackingSlipSelected(bucketKey) {
     return;
   }
   printPackingSlip(bucketKey, ids);
+  selectedOrders[bucketKey].clear();
+  renderBuckets();
 }
 
 async function doShip(bucketKey, detailId, orderIds, btnId) {
