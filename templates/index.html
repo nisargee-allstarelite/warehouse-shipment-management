@@ -521,6 +521,7 @@ function buildPackingSlipLines(bucket, orderIds) {
         lines.push({
           order_id: item.order_id,
           name: detail.name || detail.sku || "",
+          color: detail.color || "",
           sku: detail.sku || "",
           size: detail.size || "",
           qty: detail.qty || 1,
@@ -530,6 +531,7 @@ function buildPackingSlipLines(bucket, orderIds) {
       lines.push({
         order_id: item.order_id,
         name: item.name || item.sku || "",
+        color: item.color || "",
         sku: item.sku || "",
         size: item.size || "",
         qty: 1,
@@ -555,6 +557,7 @@ function printPackingSlip(bucketKey, orderIds) {
     <tr>
       <td>${escapeHtml(l.order_id)}</td>
       <td>${escapeHtml(l.name)}</td>
+      <td>${escapeHtml(l.color)}</td>
       <td>${escapeHtml(l.sku)}</td>
       <td>${escapeHtml(l.size)}</td>
       <td>${l.qty}</td>
@@ -582,7 +585,7 @@ function printPackingSlip(bucketKey, orderIds) {
       <div class="meta">${lines.length} line item(s) across ${orderCount} order(s) — generated ${new Date().toLocaleString()}</div>
       <table>
         <thead>
-          <tr><th>Order #</th><th>Style / Name</th><th>SKU</th><th>Size</th><th>Qty</th></tr>
+          <tr><th>Order #</th><th>Style / Name</th><th>Color</th><th>SKU</th><th>Size</th><th>Qty</th></tr>
         </thead>
         <tbody>${rowsHtml}</tbody>
       </table>
