@@ -25,6 +25,16 @@ HANDOVER_METHOD = "PICKUP"
 LABELS_DIR = "labels"
 SHIPPING_LOG_FILE = "shipping_history.jsonl"
 
+# Get Document occasionally fails immediately after a successful Batch Ship
+# with "Please arrange shipment before retrieving the shipping document" -
+# TikTok's backend hasn't finished registering the shipment internally yet,
+# even though Batch Ship already reported success for this package. This is
+# NOT a real failure, just a lag - so it's worth a couple of short retries
+# before giving up, rather than dropping the order out of the batch.
+GET_DOCUMENT_RETRY_ERROR_SUBSTRING = "arrange shipment"
+GET_DOCUMENT_MAX_ATTEMPTS = 3
+GET_DOCUMENT_RETRY_DELAY_SECONDS = 2  # doubles each retry: 2s, then 4s
+
 
 def create_package(order_id):
     """
@@ -124,6 +134,33 @@ def get_shipping_document(package_id):
     }
 
 
+def get_shipping_document_with_retry(package_id):
+    """
+    Same as get_shipping_document(), but specifically retries when the
+    failure looks like TikTok's backend just hasn't caught up yet (see
+    GET_DOCUMENT_RETRY_ERROR_SUBSTRING above) - up to 3 attempts total,
+    waiting 2s then 4s between tries. Any OTHER kind of error is returned
+    immediately, unretried, since retrying a genuinely different failure
+    wouldn't help and would just slow the batch down for no reason.
+    """
+    delay = GET_DOCUMENT_RETRY_DELAY_SECONDS
+    data = None
+    for attempt in range(1, GET_DOCUMENT_MAX_ATTEMPTS + 1):
+        success, data = get_shipping_document(package_id)
+        if success:
+            return True, data
+
+        message = (data.get("message") or "").lower()
+        is_retryable = GET_DOCUMENT_RETRY_ERROR_SUBSTRING in message
+        if not is_retryable or attempt == GET_DOCUMENT_MAX_ATTEMPTS:
+            return False, data
+
+        time.sleep(delay)
+        delay *= 2
+
+    return False, data
+
+
 def ship_orders(items, progress_callback=None):
     """
     Runs the full pipeline for a list of orders and returns one result dict
@@ -215,7 +252,7 @@ def ship_orders(items, progress_callback=None):
         if not oid:
             continue
         report(f"Retrieving label for order {oid}...")
-        success, data = get_shipping_document(pkg_id)
+        success, data = get_shipping_document_with_retry(pkg_id)
         if success:
             results[oid]["success"] = True
             results[oid]["doc_url"] = data.get("doc_url")
