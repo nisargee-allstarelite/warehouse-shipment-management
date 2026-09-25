@@ -298,24 +298,15 @@ function escapeHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
-function timeAgo(isoString) {
-  if (!isoString) return "never";
-  const seconds = Math.floor((new Date() - new Date(isoString)) / 1000);
-  if (seconds < 60) return seconds + "s ago";
-  if (seconds < 3600) return Math.floor(seconds / 60) + "m ago";
-  return Math.floor(seconds / 3600) + "h ago";
-}
-
 async function loadData() {
   const res = await fetch("/api/buckets");
   currentData = await res.json();
   document.getElementById("stat-orders").textContent = currentData.total_orders;
   document.getElementById("stat-buckets").textContent = currentData.total_buckets;
 
-  const pollingText = currentData.is_polling ? " (refreshing now...)" : "";
-  const errorText = currentData.last_error ? ` - last error: ${currentData.last_error}` : "";
-  document.getElementById("status-line").textContent =
-    `Updated ${timeAgo(currentData.last_updated)}${pollingText}${errorText}`;
+  const pollingText = currentData.is_polling ? "Refreshing now..." : "";
+  const errorText = currentData.last_error ? `Last error: ${currentData.last_error}` : "";
+  document.getElementById("status-line").textContent = errorText || pollingText;
 
   renderBuckets();
 }
@@ -534,10 +525,9 @@ async function refreshUntilCaughtUp(sinceTimestamp, maxWaitMs = 90000) {
       currentData = data;
       document.getElementById("stat-orders").textContent = currentData.total_orders;
       document.getElementById("stat-buckets").textContent = currentData.total_buckets;
-      const pollingText = currentData.is_polling ? " (refreshing now...)" : "";
-      const errorText = currentData.last_error ? ` - last error: ${currentData.last_error}` : "";
-      document.getElementById("status-line").textContent =
-        `Updated ${timeAgo(currentData.last_updated)}${pollingText}${errorText}`;
+      const pollingText = currentData.is_polling ? "Refreshing now..." : "";
+      const errorText = currentData.last_error ? `Last error: ${currentData.last_error}` : "";
+      document.getElementById("status-line").textContent = errorText || pollingText;
       renderBuckets();
       return;
     }
