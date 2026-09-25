@@ -497,9 +497,43 @@ async function mergeBucket(fromKey, detailId) {
   loadData();
 }
 
+// Re-fetching the FULL order queue from TikTok consistently takes real time
+// (15-30+ seconds isn't unusual once there are hundreds of orders) - a
+// refresh triggered right after an action (clicking "Refresh now", or
+// finishing a ship) used to fire just 1 second later, which is almost
+// always too early and shows the same stale data as before. This instead
+// keeps checking back every couple seconds until the server's own
+// last_updated timestamp is actually newer than what we had before the
+// action - only then does it update the visible grid, so a shipped order
+// reliably disappears once it truly should, without needing a disruptive
+// recurring refresh the rest of the time.
+async function refreshUntilCaughtUp(sinceTimestamp, maxWaitMs = 90000) {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const res = await fetch("/api/buckets");
+    const data = await res.json();
+    if (!sinceTimestamp || (data.last_updated && new Date(data.last_updated) > new Date(sinceTimestamp))) {
+      currentData = data;
+      document.getElementById("stat-orders").textContent = currentData.total_orders;
+      document.getElementById("stat-buckets").textContent = currentData.total_buckets;
+      const pollingText = currentData.is_polling ? " (refreshing now...)" : "";
+      const errorText = currentData.last_error ? ` - last error: ${currentData.last_error}` : "";
+      document.getElementById("status-line").textContent =
+        `Updated ${timeAgo(currentData.last_updated)}${pollingText}${errorText}`;
+      renderBuckets();
+      return;
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  // Gave up waiting for confirmation - still do a plain refresh rather than nothing.
+  await loadData();
+}
+
 async function refreshNow() {
+  const priorLastUpdated = currentData.last_updated;
+  document.getElementById("status-line").textContent = "Refreshing - this can take up to 30 seconds for a full order re-check...";
   await fetch("/api/refresh", { method: "POST" });
-  setTimeout(loadData, 1000);
+  await refreshUntilCaughtUp(priorLastUpdated);
 }
 
 // --- Packing slips (client-side only - no API call needed, since every
@@ -636,6 +670,7 @@ async function doShip(bucketKey, detailId, orderIds, btnId) {
   );
   if (!confirmed) return;
 
+  const priorLastUpdated = currentData.last_updated;
   const btn = document.getElementById(btnId);
   const originalText = btn.textContent;
   btn.disabled = true;
@@ -683,7 +718,7 @@ async function doShip(bucketKey, detailId, orderIds, btnId) {
   } finally {
     btn.disabled = false;
     btn.textContent = originalText;
-    setTimeout(loadData, 1000);
+    refreshUntilCaughtUp(priorLastUpdated);
   }
 }
 
@@ -748,7 +783,12 @@ function closeShipModal(event) {
 }
 
 loadData();
-setInterval(loadData, 15000);
+// Auto-refresh removed on purpose - it was rebuilding the entire bucket
+// grid every 15 seconds, which reset scroll position inside any open
+// bucket back to the top. Data now only refreshes when "Refresh now" is
+// clicked, or automatically right after a ship action - both now wait for
+// the server to genuinely confirm it's caught up (see refreshUntilCaughtUp)
+// rather than guessing at a fixed delay.
 </script>
 
 </body>
