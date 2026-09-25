@@ -140,19 +140,24 @@
     vertical-align: middle;
     cursor: pointer;
   }
-  .merge-row {
+  .action-row {
     margin-top: 10px;
     display: flex;
-    gap: 6px;
+    justify-content: flex-end;
+    gap: 8px;
   }
-  .merge-row select {
-    flex: 1;
+  .ship-btn {
+    background: #b45309;
     font-size: 12px;
-    padding: 4px;
+    padding: 6px 12px;
   }
-  .merge-row button {
-    padding: 4px 10px;
+  .ship-btn:disabled {
+    background: #d1d5db;
+    cursor: not-allowed;
+  }
+  .action-row button.secondary {
     font-size: 12px;
+    padding: 6px 12px;
   }
   #empty {
     color: var(--muted);
@@ -191,21 +196,6 @@
   }
   #modal-close {
     margin-top: 16px;
-  }
-  .ship-row {
-    margin-top: 10px;
-    display: flex;
-    justify-content: flex-end;
-    gap: 8px;
-  }
-  .ship-btn {
-    background: #b45309;
-    font-size: 12px;
-    padding: 6px 12px;
-  }
-  .ship-btn:disabled {
-    background: #d1d5db;
-    cursor: not-allowed;
   }
   .ship-result-row {
     padding: 8px 0;
@@ -280,6 +270,11 @@
 </div>
 
 <script>
+// Must exactly match server.py's ARCHIVE_BUCKET string - used to tell
+// whether a bucket's "move" button should say "to Archive" or "back", and
+// whether it should call /api/archive or /api/unarchive.
+const ARCHIVE_BUCKET_KEY = "\u{1F4E5} ARCHIVE";
+
 let currentData = { buckets: [] };
 let selectedOrders = {};
 // Which bucket detail panels are currently open, by detailId. Checked at
@@ -334,15 +329,15 @@ function renderBuckets() {
   const filtered = currentData.buckets.filter(b => b.key.toUpperCase().includes(query));
   empty.style.display = filtered.length === 0 ? "block" : "none";
 
-  const allKeys = currentData.buckets.map(b => b.key);
-
   filtered.forEach(bucket => {
     const card = document.createElement("div");
     card.className = "bucket-card";
 
     const detailId = bucketDetailId(bucket.key);
     const isShippable = !bucket.key.includes("BUNDLES") && !bucket.key.includes("NEEDS REVIEW");
+    const isArchiveBucket = bucket.key === ARCHIVE_BUCKET_KEY;
     const isOpen = openBuckets.has(detailId);
+    const selectedCount = selectedOrders[bucket.key]?.size || 0;
 
     const allSelected = isShippable && bucket.items.length > 0 &&
       bucket.items.every(item => selectedOrders[bucket.key]?.has(item.order_id));
@@ -381,32 +376,38 @@ function renderBuckets() {
       `;
     }).join("");
 
-    const otherOptions = allKeys
-      .filter(k => k !== bucket.key)
-      .map(k => `<option value="${k}">${k}</option>`)
-      .join("");
-
-    const packingRowHtml = isShippable ? `
-      <div class="ship-row" onclick="event.stopPropagation()">
+    // Print + Ship: exactly 2 buttons, both act on whatever is checked
+    // (or everything, if "Select all" was used) - no separate "all" buttons.
+    const actionsHtml = isShippable ? `
+      <div class="action-row" onclick="event.stopPropagation()">
         <button class="secondary" onclick="printPackingSlipSelected('${bucket.key}')">
-          Print packing slip (selected)
+          Print packing slip (selected <span id="print-selected-count-${detailId}">${selectedCount}</span>)
         </button>
-        <button class="secondary" onclick="printPackingSlipAll('${bucket.key}')">
-          Print packing slip (all ${bucket.count})
+        <button class="ship-btn" id="ship-selected-btn-${detailId}" onclick="shipSelected('${bucket.key}', '${detailId}')">
+          Ship selected (<span id="selected-count-${detailId}">${selectedCount}</span>)
         </button>
       </div>
     ` : "";
 
-    const shipRowHtml = isShippable ? `
-      <div class="ship-row" onclick="event.stopPropagation()">
-        <button class="ship-btn secondary" id="ship-selected-btn-${detailId}" onclick="shipSelected('${bucket.key}', '${detailId}')">
-          Ship selected (<span id="selected-count-${detailId}">${selectedOrders[bucket.key]?.size || 0}</span>)
-        </button>
-        <button class="ship-btn" id="ship-btn-${detailId}" onclick="shipBucket('${bucket.key}', '${detailId}')">
-          Ship all ${bucket.count} order${bucket.count === 1 ? "" : "s"} in this bucket
-        </button>
-      </div>
-    ` : "";
+    // Archive / un-archive: same select-then-act pattern as ship/print,
+    // just moving the order between "visible in its bucket" and "hidden in
+    // Archive" instead of doing something to it. Only shown where
+    // checkboxes exist at all (isShippable), same as the buttons above.
+    const archiveActionHtml = isShippable ? (
+      isArchiveBucket ? `
+        <div class="action-row" onclick="event.stopPropagation()">
+          <button class="secondary" onclick="moveSelectedBack('${bucket.key}', '${detailId}')">
+            Move selected back
+          </button>
+        </div>
+      ` : `
+        <div class="action-row" onclick="event.stopPropagation()">
+          <button class="secondary" onclick="moveSelectedToArchive('${bucket.key}', '${detailId}')">
+            Move selected to Archive
+          </button>
+        </div>
+      `
+    ) : "";
 
     card.innerHTML = `
       <div class="row" onclick="toggleDetail('${detailId}')">
@@ -416,15 +417,8 @@ function renderBuckets() {
       <div class="bucket-detail${isOpen ? " open" : ""}" id="${detailId}">
         ${selectAllHtml}
         ${itemsHtml}
-        <div class="merge-row" onclick="event.stopPropagation()">
-          <select id="merge-target-${detailId}">
-            <option value="">Merge into...</option>
-            ${otherOptions}
-          </select>
-          <button onclick="mergeBucket('${bucket.key}', '${detailId}')">Merge</button>
-        </div>
-        ${packingRowHtml}
-        ${shipRowHtml}
+        ${archiveActionHtml}
+        ${actionsHtml}
       </div>
     `;
     grid.appendChild(card);
@@ -448,8 +442,11 @@ function toggleOrderSelection(bucketKey, orderId, checked, detailId) {
   } else {
     selectedOrders[bucketKey].delete(orderId);
   }
-  const countSpan = document.getElementById("selected-count-" + detailId);
-  if (countSpan) countSpan.textContent = selectedOrders[bucketKey].size;
+  const count = selectedOrders[bucketKey].size;
+  const shipCountSpan = document.getElementById("selected-count-" + detailId);
+  if (shipCountSpan) shipCountSpan.textContent = count;
+  const printCountSpan = document.getElementById("print-selected-count-" + detailId);
+  if (printCountSpan) printCountSpan.textContent = count;
 }
 
 function toggleSelectAll(bucketKey, checked) {
@@ -462,7 +459,7 @@ function toggleSelectAll(bucketKey, checked) {
   } else {
     selectedOrders[bucketKey].clear();
   }
-  // Full re-render to keep every individual checkbox, the selected count,
+  // Full re-render to keep every individual checkbox, both selected counts,
   // and this select-all box itself all in sync - the bucket stays open
   // since its detailId is already in openBuckets from being clicked into.
   renderBuckets();
@@ -483,18 +480,39 @@ function closeModal(event) {
   }
 }
 
-async function mergeBucket(fromKey, detailId) {
-  const select = document.getElementById("merge-target-" + detailId);
-  const intoKey = select.value;
-  if (!intoKey) return;
-  if (!confirm(`Merge "${fromKey}" into "${intoKey}"? This can't be undone from the UI.`)) return;
+// --- Archive / un-archive: purely local server-side moves, no TikTok call
+// happens, so a plain loadData() right after already reflects the change -
+// no need for the slower refreshUntilCaughtUp() polling used after a real
+// ship action. ---
 
-  await fetch("/api/merge", {
+async function moveSelectedToArchive(bucketKey, detailId) {
+  const ids = Array.from(selectedOrders[bucketKey] || []);
+  if (ids.length === 0) {
+    alert("No orders selected - check the boxes next to the orders you want to move first.");
+    return;
+  }
+  await fetch("/api/archive", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ from_key: fromKey, into_key: intoKey }),
+    body: JSON.stringify({ order_ids: ids }),
   });
-  loadData();
+  if (selectedOrders[bucketKey]) selectedOrders[bucketKey].clear();
+  await loadData();
+}
+
+async function moveSelectedBack(bucketKey, detailId) {
+  const ids = Array.from(selectedOrders[bucketKey] || []);
+  if (ids.length === 0) {
+    alert("No orders selected - check the boxes next to the orders you want to move first.");
+    return;
+  }
+  await fetch("/api/unarchive", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ order_ids: ids }),
+  });
+  if (selectedOrders[bucketKey]) selectedOrders[bucketKey].clear();
+  await loadData();
 }
 
 // Re-fetching the FULL order queue from TikTok consistently takes real time
@@ -645,12 +663,6 @@ function printPackingSlip(bucketKey, orderIds) {
   win.onload = () => win.print();
 }
 
-function printPackingSlipAll(bucketKey) {
-  printPackingSlip(bucketKey, null);
-  if (selectedOrders[bucketKey]) selectedOrders[bucketKey].clear();
-  renderBuckets();
-}
-
 function printPackingSlipSelected(bucketKey) {
   const ids = Array.from(selectedOrders[bucketKey] || []);
   if (ids.length === 0) {
@@ -663,7 +675,7 @@ function printPackingSlipSelected(bucketKey) {
 }
 
 async function doShip(bucketKey, detailId, orderIds, btnId) {
-  const count = orderIds ? orderIds.length : (currentData.buckets.find(b => b.key === bucketKey)?.count || 0);
+  const count = orderIds.length;
   const confirmed = confirm(
     `This will purchase REAL shipping labels for ${count} order(s) in "${bucketKey}".\n\n` +
     `This spends real money and cannot be undone. Continue?`
@@ -677,8 +689,7 @@ async function doShip(bucketKey, detailId, orderIds, btnId) {
   btn.textContent = "Starting...";
 
   try {
-    const body = { bucket_key: bucketKey };
-    if (orderIds) body.order_ids = orderIds;
+    const body = { bucket_key: bucketKey, order_ids: orderIds };
 
     const startRes = await fetch("/api/ship_bucket", {
       method: "POST",
@@ -720,10 +731,6 @@ async function doShip(bucketKey, detailId, orderIds, btnId) {
     btn.textContent = originalText;
     refreshUntilCaughtUp(priorLastUpdated);
   }
-}
-
-async function shipBucket(bucketKey, detailId) {
-  await doShip(bucketKey, detailId, null, "ship-btn-" + detailId);
 }
 
 async function shipSelected(bucketKey, detailId) {

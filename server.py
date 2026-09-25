@@ -30,6 +30,8 @@ PORT = int(os.environ.get("PORT", 5000))
 STATE_FILE = "state.json"
 DASHBOARD_PASSWORD = os.environ.get("DASHBOARD_PASSWORD")
 
+ARCHIVE_BUCKET = "\U0001F4E5 ARCHIVE"
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("FLASK_SECRET_KEY")
 
@@ -71,8 +73,20 @@ def logout():
 
 state_lock = threading.Lock()
 state = {
-    "buckets": {},        # bucket_key -> list of item dicts
-    "merged_into": {},    # old_key -> new_key, for manual merges
+    # raw_buckets is the untouched, correct categorization from the last
+    # real poll - this NEVER changes when something is archived. It's the
+    # single source of truth for "what bucket does this order really
+    # belong in", which is exactly what makes un-archiving instant and
+    # reliable: nothing needs to be recomputed or re-fetched, an order's
+    # real bucket was never forgotten, only hidden from view.
+    "raw_buckets": {},
+    # buckets is what the dashboard actually displays - raw_buckets with
+    # archived_order_ids pulled out into ARCHIVE_BUCKET. Recomputed by
+    # recompute_visible_buckets() after every real poll AND after every
+    # archive/unarchive action, so both cases produce an identical,
+    # correct result with no special-casing between them.
+    "buckets": {},
+    "archived_order_ids": [],
     "last_updated": None,
     "last_error": None,
     "total_orders": 0,
@@ -107,15 +121,49 @@ active_ship_buckets = set()    # bucket_keys currently mid-ship
 reconcile_state = {"in_progress": False}
 
 
+def recompute_visible_buckets():
+    """
+    Rebuilds state["buckets"] (what the dashboard actually shows) from
+    state["raw_buckets"] (the untouched real categorization) and
+    state["archived_order_ids"]. Called after every real poll AND after
+    every archive/unarchive action - both paths go through this exact same
+    function, so there's only one place that decides what's visible where.
+    Must be called with state_lock already held.
+    """
+    archived_ids = set(state["archived_order_ids"])
+    visible = {}
+    archive_items = []
+
+    for bucket_key, items in state["raw_buckets"].items():
+        kept = []
+        for item in items:
+            if item.get("order_id") in archived_ids:
+                archive_items.append(item)
+            else:
+                kept.append(item)
+        if kept:
+            visible[bucket_key] = kept
+
+    if archive_items:
+        visible[ARCHIVE_BUCKET] = archive_items
+
+    state["buckets"] = visible
+    state["total_orders"] = sum(len(v) for v in visible.values())
+
+
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
             with open(STATE_FILE, "r") as f:
                 saved = json.load(f)
-                state["buckets"] = saved.get("buckets", {})
-                state["merged_into"] = saved.get("merged_into", {})
+                state["raw_buckets"] = saved.get("raw_buckets", {})
+                state["archived_order_ids"] = saved.get("archived_order_ids", [])
                 state["last_updated"] = saved.get("last_updated")
-                state["total_orders"] = saved.get("total_orders", 0)
+                # buckets is always DERIVED, never trusted from disk directly -
+                # recomputing here guarantees it's consistent with whatever
+                # raw_buckets + archived_order_ids actually say, even if an
+                # old state.json predates this recompute logic.
+                recompute_visible_buckets()
         except Exception as e:
             print(f"Could not load saved state: {e}")
 
@@ -123,22 +171,10 @@ def load_state():
 def save_state():
     with open(STATE_FILE, "w") as f:
         json.dump({
-            "buckets": state["buckets"],
-            "merged_into": state["merged_into"],
+            "raw_buckets": state["raw_buckets"],
+            "archived_order_ids": state["archived_order_ids"],
             "last_updated": state["last_updated"],
-            "total_orders": state["total_orders"],
         }, f, indent=2)
-
-
-def apply_merges(buckets):
-    """Fold any manually-merged bucket keys together."""
-    merged = dict(buckets)
-    for old_key, new_key in state["merged_into"].items():
-        if old_key in merged:
-            items = merged.pop(old_key)
-            merged.setdefault(new_key, [])
-            merged[new_key].extend(items)
-    return merged
 
 
 def poll_once():
@@ -149,25 +185,19 @@ def poll_once():
 
     try:
         orders = tiktok_api.fetch_awaiting_shipment_orders(days_back=90)
-        buckets = bucket_orders(orders)
-        buckets = apply_merges(buckets)
+        raw_buckets = bucket_orders(orders)
 
         with state_lock:
-            state["buckets"] = buckets
-            # total_orders reflects only ACTIONABLE orders - ones that have a
-            # seller note and got placed in a real bucket. An Awaiting
-            # Shipment order with no note yet isn't ready to process, so it
-            # shouldn't count toward the number shown at the top of the
-            # dashboard (bucket_orders already silently skips these).
-            state["total_orders"] = sum(len(v) for v in buckets.values())
+            state["raw_buckets"] = raw_buckets
             # Timezone-aware timestamp - a naive one here gets misread by
             # the browser's Date parser as local time instead of UTC,
             # which is what caused the "-14245s ago" display bug.
             state["last_updated"] = datetime.now(timezone.utc).isoformat()
             state["is_polling"] = False
+            recompute_visible_buckets()
             save_state()
 
-        print(f"  Done - {len(orders)} orders across {len(buckets)} buckets.")
+        print(f"  Done - {len(orders)} orders across {len(state['buckets'])} buckets.")
     except Exception as e:
         print(f"  ERROR during poll: {e}")
         with state_lock:
@@ -217,25 +247,49 @@ def api_refresh():
     return jsonify({"status": "refresh started"})
 
 
-@app.route("/api/merge", methods=["POST"])
-def api_merge():
-    """Manually merge one bucket into another (fixes typo-variant splits)."""
+@app.route("/api/archive", methods=["POST"])
+def api_archive():
+    """
+    Hides the given order_ids from their normal bucket and shows them in
+    Archive instead. This is purely a local, instant operation - no TikTok
+    API call happens here, so the response reflects the change immediately,
+    no waiting on a real refresh. The order's real categorization in
+    raw_buckets is never touched, which is what makes un-archiving able to
+    put it back correctly later without recomputing anything.
+    """
     data = request.get_json()
-    from_key = data.get("from_key")
-    into_key = data.get("into_key")
-
-    if not from_key or not into_key or from_key == into_key:
-        return jsonify({"error": "Invalid keys"}), 400
+    order_ids = data.get("order_ids", [])
+    if not order_ids:
+        return jsonify({"error": "No orders specified"}), 400
 
     with state_lock:
-        if from_key in state["buckets"]:
-            items = state["buckets"].pop(from_key)
-            state["buckets"].setdefault(into_key, [])
-            state["buckets"][into_key].extend(items)
-            state["merged_into"][from_key] = into_key
-            save_state()
+        state["archived_order_ids"] = list(set(state["archived_order_ids"]) | set(order_ids))
+        recompute_visible_buckets()
+        save_state()
 
-    return jsonify({"status": "merged"})
+    return jsonify({"status": "archived", "count": len(order_ids)})
+
+
+@app.route("/api/unarchive", methods=["POST"])
+def api_unarchive():
+    """
+    Removes the given order_ids from the archived list. Each one reappears
+    in whatever bucket raw_buckets already says it belongs in - that
+    categorization was never forgotten while archived, so this needs no
+    lookup or recomputation beyond the same recompute_visible_buckets()
+    every other view change already goes through.
+    """
+    data = request.get_json()
+    order_ids = data.get("order_ids", [])
+    if not order_ids:
+        return jsonify({"error": "No orders specified"}), 400
+
+    with state_lock:
+        state["archived_order_ids"] = list(set(state["archived_order_ids"]) - set(order_ids))
+        recompute_visible_buckets()
+        save_state()
+
+    return jsonify({"status": "unarchived", "count": len(order_ids)})
 
 
 @app.route("/api/ship_bucket", methods=["POST"])
