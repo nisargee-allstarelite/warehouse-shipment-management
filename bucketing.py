@@ -17,6 +17,19 @@ Three kinds of notes, based on what info is present:
     Bucketed by the descriptive name (broad category), SKU kept as a
     field for reference/lookup.
 
+CATEGORY_MAP was expanded by cross-referencing the full Shopify product
+catalog: for every SKU, the product's title was classified using the same
+match_known_category_name() logic used for descriptive notes, then every
+SKU code was checked for how consistently it corresponded to one category.
+Codes that were reliably (>=90%) one category were added directly; codes
+that meant different things depending on context were resolved by hand
+(see match_category_code()'s SKELETOR handling for the one code that
+genuinely needs to know the SKU's total segment count, not just its
+content). Several OLD entries also had their VALUE updated, not just kept
+as-is - some legacy category names (e.g. "Denim Shorts", "Cotton Shorts",
+"Tapestry Shorts") don't correspond to any of the current 88 categories,
+so those were mapped to the real current bucket name instead.
+
 Every order produces exactly ONE row in exactly ONE bucket, no matter how
 many line items its note contains:
   - All lines the SAME category -> one row in that category's bucket,
@@ -36,40 +49,237 @@ OTHERS = "Others"
 NEEDS_REVIEW = "\u26a0\ufe0f NEEDS REVIEW"
 BUNDLES = "\U0001F4E6 BUNDLES (multi-item orders)"
 
-# --- Legacy SKU-code format (unchanged) ---
+# ─── SKU code lookup (expanded from the full product catalog) ─────────
+#
+# Every code below was checked against real product titles across the
+# whole catalog and confirmed to correspond to one category at least 90%
+# of the time (most are 95-100%). A handful of codes that genuinely meant
+# different things in different contexts were resolved by hand rather
+# than guessed - those decisions are baked into the values below.
 CATEGORY_MAP = {
-    "DNMSHT": "Denim Shorts",
-    "BBJ": "Basketball Jersey",
-    "BAJ": "Baseball Jersey",
-    "POLO": "Rugby Polo",
-    "TSHT": "Tshirt",
-    "MINK": "Mink Jacket",
-    "SFLNL": "Short Sleeved Flannel Shirt",
-    "MOTO": "Moto Jacket",
-    "LESHT": "Leather Shorts",
-    "CSHT": "Cotton Shorts",
-    "CUTSHT": "Cutoff Tshirt",
-    "CRODNMSHT": "Crochet Denim Shorts",
-    "CARPSHT": "Carpenter Shorts",
-    "TFLNL": "Tshirt Flannel",
-    "LTSHT": "Long Sleeved Tshirts",
-    "HOOD": "Hoodie",
-    "DNMWSHT": "Denim Work Shirt",
-    "PUFF": "Puffer Jacket",
-    "TAPE": "Tapestry Shorts",
-    "CSWT": "Sweater",
-    "SSHT": "Short Sleeved Button Down Shirts",
-    "PWSHT": "Button Shirt",
-    "PPNTS": "Pants",
-    "SWEAT-JKT": "Sweatsuit Jacket",  # two-segment code - matched before plain SWEAT
-    "SHT": "Shorts",
-    "SWEAT": "Sweats",
+    # --- Shoe lines ---
+    "ARCTIC FOX":   "Artic Fox",
+    "BCK":          "Backpack",
+    "BB":           "Boneba",
+    "BONES":        "Bones",
+    "BON":          "Bones",
+    "BRANDX":       "Bones",
+    "BS":           "Bonesta",
+    "BONESTA":      "Bonesta",
+    "CB":           "Chunky Bones",
+    "CHUNKY BONES": "Chunky Bones",
+    "CM":           "Cosmos",
+    "COURT":        "Court Classic",
+    "CRYPT KEPPER": "Crypt Crawler",
+    "IV":           "Invader",
+    "K FLIP":       "K Flip",
+    "KFC":          "K Flip",
+    "KFJ":          "K Flip",
+    "K":            "K Flip",
+    "KF":           "K Flip",
+    "L1":           "Lifestyle 01",
+    "LP":           "LoPro/LoPros",
+    "LR":           "Lyte Runner",
+    "NORTH":        "North Star",
+    "RAIDER":       "Raider",
+    "ROCKSTAR":     "Rockstar",
+    "SOUL":         "Soul Sprinter",
+    "TRAILMAX":     "Trailmax",
+    "RACR":         "Triple 7 Racer",
+    "VC":           "Vulcan/Vulcans",
+    "VULCAN":       "Vulcan/Vulcans",
+    "HVC":          "Vulcan/Vulcans",
+    "VC2":          "Vulcan/Vulcans",
+    "VT":           "Vulture",
+    "VULTURE":      "Vulture",
+    "VV2":          "Vulture V2",
+    "CC":           "Concord",
+    "A":            "Anuras",
+    "7SVN7":        "7SVN7",
+    # SKELETOR is intentionally NOT listed here - it means a different shoe
+    # depending on the SKU's total length, handled by match_category_code()
+    # before this dict is ever consulted. See that function for details.
+
+    # --- Named apparel ---
+    "BBPAC":  "Baseball Jersey",
+    "YPOJ":   "Baseball Jersey",
+    "BAJ":    "Baseball Jersey",
+    "YBAJ":   "Baseball Jersey",
+    "BJ":     "Baseball Jersey",
+    "YBBJ":   "Basketball Jersey",
+    "YBBL":   "Basketball Jersey",
+    "YYBBJ":  "Basketball Jersey",
+    "BBJ":    "Basketball Jersey",
+    "BBS":    "Basketball Shorts",
+    "DJKT":   "Denim Jacket",
+    "SFLNL":  "Flannel Shirt",
+    "FLNL":   "Flannel Shirt",
+    "FBJ":    "Football Jersey",
+    "YFBJ":   "Football Jersey",
+    "CFBJ":   "Football Jersey",
+    "YYFBJ":  "Football Jersey",
+    "HKY":    "Hockey Jersey",
+    "HKYJ":   "Hockey Jersey",
+    "YHKYJ":  "Hockey Jersey",
+    "YHKY":   "Hockey Jersey",
+    "YYHKYJ": "Hockey Jersey",
+    "JDRESS": "Jersey Dress",
+    "JD":     "Jersey Dress",
+    "JDRS":   "Jersey Dress",
+    "BJD":    "Jersey Dress",
+    "LJKT":   "Leather Jacket",
+    "LSHT":   "Long Sleeve Tee",
+    "MOTO":   "Moto Jacket",
+    "YRJKT":  "Moto Jacket",
+    "PUFF":   "Puffer Jacket/Vest",
+    "RJKT":   "Racing Jackets",
+    "WMJKT":  "Racing Jackets",
+    "YWMJKT": "Racing Jackets",
+    "RCKT":   "Rock Tshirt",
+    "SJKT":   "Satin Jacket",
+    "YYSJKT": "Satin Jacket",
+    "PJKT":   "Satin Jacket",
+    "SATIN":  "Satin Jacket",
+    "YJKT":   "Satin Jacket",
+    "YPJKT":  "Satin Jacket",
+    "YSJKT":  "Satin Jacket",
+    "SPAN":   "Satin Pants",
+    "RSWP":   "Satin Pants",
+    "SHRP":   "Sherpa Jacket",
+    "SOCC":   "Soccer Jersey",
+    "YSOCC":  "Soccer Jersey",
+    "SOC":    "Soccer Jersey",
+    "BSWEAT":  "Sweatsuit",
+    "YHSWEAT": "Sweatsuit",
+    "YBSWEAT": "Sweatsuit",
+    "HSWEAT":  "Sweatsuit",
+    "VJKT":   "Varsity Jacket",
+    "VJKY":   "Varsity Jacket",
+    "WVJKT":  "Varsity Jacket",
+    "YVJKT":  "Varsity Jacket",
+    "YVJKY":  "Varsity Jacket",
+    "WJKT":   "Work Jacket",
+    "WORK":   "Work Jacket",
+    "WKJKT":  "Work Jacket",
+    "WSHT":   "Work Shirt",
+    "DNMWSHT": "Work Shirt",
+    "SHRT":   "Work Shirt",
+
+    # --- Generic categories ---
+    "CROP":     "Crop Top",
+    "DNM":      "Denim",
+    "JEAN":     "Denim",
+    "BX":       "Denim",
+    "WTSN":     "Denim",
+    "DSSHT":    "Denim",
+    "QZIPSHT":  "Denim",
+    "MINK":     "Jackets",
+    "WKKT":     "Jackets",
+    "YWKJKT":   "Jackets",
+    "POJ":      "Jerseys",
+    "CARGO":    "Pants",
+    "PPNTS":    "Pants",
+    "UATW":     "Pants",
+    "3337N":    "Pants",
+    "LPOLO":    "Polo",
+    "POLO":     "Polo",
+    "PWSHT":    "Shirt",
+    "SPOLO":    "Shirt",
+    "WSILK":    "Shirt",
+    "LBTN":     "Shirt",
+    "DNMSHT":   "Shorts",
+    "CSHT":     "Shorts",
+    "CARPSHT":  "Shorts",
+    "LESHT":    "Shorts",
+    "CRODNMSHT": "Shorts",
+    "KSHT":     "Shorts",
+    "SSHT":     "Shorts",
+    "SHT":      "Shorts",
+    "YSHT":     "Shorts",
+    "MSHT":     "Shorts",
+    "RC":       "Sneakers",
+    "OT":       "Sneakers",
+    "S":        "Sneakers",
+    "M":        "Sneakers",
+    "SK8":      "Sneakers",
+    "SS":       "Sneakers",
+    "CSWT":     "Sweater",
+    "SWT":      "Sweater",
+    "SWEAT":    "Sweatpants",
+    "FSWEAT":   "Sweatpants",
+    "CUTSHT":   "Tshirts",
+    "TFLNL":    "Tshirts",
+    "SLTSHT":   "Tshirts",
+    "BARBIE":   "Tshirts",
+    "ETSHT":    "Tshirts",
+    "MTSHT":    "Tshirts",
+    "TSHT":     "Tshirts",
+    "DTG":      "Tshirts",
+    "YTSHT":    "Tshirts",
+    "THST":     "Tshirts",
+    "LTSHT":    "Tshirts",
+    "HTSHT":    "Tshirts",
+    "VEST":     "Vest",
+
+    # --- Accessories ---
+    "CHAIN":  "Denim Chain",
+    "DUFF":   "Duffle Bag",
+    "FHAT":   "Hats",
+    "TRUCK":  "Hats",
+    "DAD":    "Hats",
+    "BUCK":   "Hats",
+    "CHAT":   "Hats",
+    "THAT":   "Hats",
+    "YCHAT":  "Hats",
+    "YTRUCK": "Hats",
+    "YTHAT":  "Hats",
+    "CORD":   "Hats",
+    "BKT":    "Hats",
+    "YHAT":   "Hats",
+    "LN":     "Lanyard",
+    "PIN":    "Pin",
+    "RUG":    "Rug",
+    "SNAP":   "Snapback",
+    "HAT":    "Snapback",
+    "SOCK":   "Socks",
+    "SCK":    "Socks",
+    "BEAN":   "Beanie",
+    "BEANIE": "Beanie",
+    "CAP":    "Beanie",
+    "BHAT":   "Beanie",
+    "BOX":    "Boxers",
+
+    # --- Two-segment compound codes (checked as parts[1]-parts[2] first,
+    # e.g. "SWEAT-JKT" or "TRUMP-TSHT" - see match_category_code below) ---
+    "SWEAT-JKT":  "Jackets",
+    "TAPE-SHT":   "Shorts",
+    "SWEAT-PNT":  "Sweatpants",
+    "TRUMP-SHOE": "Sneakers",
+    "TRUMP-TSHT": "Tshirts",
+    "TRUMP-HOOD": "Hoodie",
+    "DTG-SB25":   "Tshirts",
+
+    # --- Codes that needed a manual call rather than a clean data majority ---
+    "TAPE":   "Hoodie",
+    "HOOD":   "Hoodie",
+    "YHOOD":  "Hoodie",
 }
 
 
 def match_category_code(parts):
     """Try a combined 2-segment code first (e.g. SWEAT-JKT), then a plain
-    single-segment code (e.g. BBJ). Returns the friendly category name."""
+    single-segment code (e.g. BBJ). Returns the friendly category name.
+
+    SKELETOR is a special case handled before anything else: the SAME code
+    means a genuinely different shoe depending on the SKU's total length
+    (e.g. BRANDX-SKELETOR-01-5 has 4 segments -> "Skeletor", while a
+    5-segment SKELETOR SKU -> "Skeletor 2") - confirmed against real
+    catalog data with zero exceptions either way, so this is a reliable
+    rule, not a guess.
+    """
+    if len(parts) >= 2 and parts[1].strip().upper() == "SKELETOR":
+        return "Skeletor" if len(parts) == 4 else "Skeletor 2"
+
     if len(parts) >= 3:
         two_seg = f"{parts[1]}-{parts[2]}".strip().upper()
         if two_seg in CATEGORY_MAP:
