@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pack &amp; Deduct - Warehouse Inventory</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --border:#e3e5e9; --text:#1a1d23; --muted:#6b7280;
+          --accent:#0f766e; --accent-light:#ccfbf1; --warn:#b45309; --warn-bg:#fef3c7; --err:#b91c1c; --err-bg:#fee2e2; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); margin:0; padding:24px; }
+  header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:20px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:16px; margin:0 0 10px; }
+  .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+  .links a { color:var(--muted); font-size:13px; margin-left:16px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  #scan { width:100%; font-size:20px; padding:14px 16px; border:2px solid var(--accent); border-radius:10px; outline:none; }
+  #scan:focus { box-shadow:0 0 0 4px var(--accent-light); }
+  .hint { color:var(--muted); font-size:13px; margin-top:8px; }
+  .flash { margin-top:10px; padding:10px 12px; border-radius:8px; font-size:14px; display:none; }
+  .flash.ok { display:block; background:var(--accent-light); color:#115e59; }
+  .flash.err { display:block; background:var(--err-bg); color:var(--err); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); padding:8px; border-bottom:1px solid var(--border); }
+  td { padding:8px; border-bottom:1px solid var(--border); vertical-align:middle; }
+  td.num { font-variant-numeric:tabular-nums; }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--muted); }
+  input.qty { width:70px; padding:6px 8px; font-size:15px; border:1px solid var(--border); border-radius:6px; }
+  input.note { width:100%; max-width:420px; padding:8px 10px; border:1px solid var(--border); border-radius:8px; font-size:14px; }
+  button { background:var(--accent); color:#fff; border:none; padding:9px 16px; border-radius:8px; font-size:14px; cursor:pointer; }
+  button:disabled { background:#d1d5db; cursor:not-allowed; }
+  button.secondary { background:transparent; color:var(--accent); border:1px solid var(--accent); }
+  button.link { background:none; color:var(--err); padding:4px 8px; }
+  .actions { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-top:14px; }
+  .row-warn td { background:var(--warn-bg); } .row-bad td { background:var(--err-bg); }
+  .msg-warn { color:var(--warn); font-size:13px; } .msg-err { color:var(--err); font-size:13px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.ok { background:var(--accent-light); color:#115e59; } .pill.bad { background:var(--err-bg); color:var(--err); }
+  .pill.warn { background:var(--warn-bg); color:var(--warn); }
+  .arrow { color:var(--muted); padding:0 4px; }
+  .empty { color:var(--muted); font-size:14px; padding:8px 0; }
+  .banner { padding:12px 14px; border-radius:8px; margin-bottom:12px; font-size:14px; }
+  .banner.ok { background:var(--accent-light); color:#115e59; } .banner.err { background:var(--err-bg); color:var(--err); }
+  a.small { font-size:12px; color:var(--accent); white-space:nowrap; }
+  .hidden { display:none; }
+  @media (max-width:700px) { body { padding:16px; } .links a { margin-left:0; margin-right:14px; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Pack &amp; Deduct</h1>
+    <div class="sub">Subtracts packed items from <b>All Star Elite Shopify &rarr; Warehouse</b> inventory. Nothing changes until you confirm.</div>
+  </div>
+  <div class="links">
+    <a href="/" target="dashboard_tab">Shipping dashboard</a>
+    <a href="/inventory/log">Deduction log</a>
+    <a href="/logout">Log out</a>
+  </div>
+</header>
+
+{% if not configured %}
+<div class="banner err">Shopify isn't connected yet: add SHOPIFY_CLIENT_ID and SHOPIFY_CLIENT_SECRET to the server's .env and restart.</div>
+{% endif %}
+
+<!-- STEP 1: scan + list -->
+<div id="step-scan">
+  <div class="card">
+    <input id="scan" autocomplete="off" autofocus placeholder="Scan barcode, or type SKU / style name and press Enter">
+    <div class="hint">Scanning the same item again adds 1 more. If several products match, pick the right size below.</div>
+    <div id="flash" class="flash"></div>
+    <div id="results" class="hidden" style="margin-top:14px;">
+      <h2 id="results-title">Pick one</h2>
+      <table><thead><tr><th>Style</th><th>Size</th><th>SKU</th><th>Warehouse</th><th></th></tr></thead><tbody id="results-body"></tbody></table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Items to deduct (<span id="cart-count">0</span>)</h2>
+    <table>
+      <thead><tr><th>Style</th><th>Size</th><th>SKU</th><th>Warehouse now</th><th>Qty</th><th></th><th></th></tr></thead>
+      <tbody id="cart-body"></tbody>
+    </table>
+    <div id="cart-empty" class="empty">Nothing scanned yet.</div>
+    <div class="actions">
+      <input id="note" class="note" placeholder="Note (optional) - e.g. TikTok order # or bucket">
+    </div>
+    <div class="actions">
+      <button id="btn-preview" disabled>Preview change</button>
+      <button id="btn-clear" class="secondary" disabled>Clear list</button>
+    </div>
+  </div>
+</div>
+
+<!-- STEP 2: preview -->
+<div id="step-preview" class="card hidden">
+  <h2>Preview - Shopify Warehouse inventory</h2>
+  <div class="sub" style="margin-bottom:10px;">Live numbers from Shopify right now.</div>
+  <table>
+    <thead><tr><th>Style</th><th>Size</th><th>SKU</th><th>Deduct</th><th>Current</th><th></th><th>New</th><th></th></tr></thead>
+    <tbody id="preview-body"></tbody>
+  </table>
+  <div id="preview-summary" class="sub" style="margin-top:10px;"></div>
+  <div class="actions">
+    <button id="btn-confirm">Confirm and deduct</button>
+    <button id="btn-back" class="secondary">Back to edit</button>
+    <span id="working" class="sub hidden">Deducting and re-checking - about 15 seconds. Don't close this tab.</span>
+  </div>
+</div>
+
+<!-- STEP 3: result -->
+<div id="step-result" class="card hidden">
+  <div id="result-banner" class="banner"></div>
+  <table>
+    <thead><tr><th>Style</th><th>Size</th><th>SKU</th><th>Qty</th><th>Before</th><th></th><th>After</th><th>Status</th><th></th></tr></thead>
+    <tbody id="result-body"></tbody>
+  </table>
+  <div class="actions">
+    <button id="btn-new">Start next</button>
+    <a href="/inventory/log" class="small">Open deduction log</a>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const KEY = "packDeductCart";
+let cart = [];
+try { cart = JSON.parse(localStorage.getItem(KEY) || "[]"); } catch (e) { cart = []; }
+let previewId = null;
+
+function save() { try { localStorage.setItem(KEY, JSON.stringify(cart)); } catch (e) {} }
+function flash(msg, kind) { const f = $("flash"); f.className = "flash " + kind; f.textContent = msg; }
+function links(r) {
+  let h = "";
+  if (r.history) h += `<a class="small" href="${esc(r.history)}" target="_blank">Inventory history</a>`;
+  if (r.edit) h += `<br><a class="small" href="${esc(r.edit)}" target="_blank">Edit style/size</a>`;
+  return h;
+}
+
+function renderCart() {
+  $("cart-count").textContent = cart.reduce((a, c) => a + (parseInt(c.qty) || 0), 0);
+  $("cart-empty").classList.toggle("hidden", cart.length > 0);
+  $("btn-preview").disabled = !cart.some(c => parseInt(c.qty) > 0);
+  $("btn-clear").disabled = cart.length === 0;
+  $("cart-body").innerHTML = cart.map((c, i) => `
+    <tr>
+      <td>${esc(c.style)}</td><td><b>${esc(c.size)}</b></td><td class="mono">${esc(c.sku)}</td>
+      <td class="num">${c.warehouse_qty ?? "-"}</td>
+      <td><input class="qty" type="number" min="0" step="1" value="${esc(c.qty)}" data-i="${i}"></td>
+      <td>${links(c)}</td>
+      <td><button class="link" data-rm="${i}" title="Remove">&times;</button></td>
+    </tr>`).join("");
+}
+
+function addToCart(v) {
+  if (v.warehouse_qty === null || v.warehouse_qty === undefined) {
+    flash(`${v.style} (${v.size}) isn't stocked at the Warehouse location - not added.`, "err");
+    return;
+  }
+  const ex = cart.find(c => c.inventory_item_id === v.inventory_item_id);
+  if (ex) ex.qty = (parseInt(ex.qty) || 0) + 1;
+  else cart.unshift({ ...v, qty: 1 });
+  save(); renderCart();
+  flash(`Added: ${v.style} - ${v.size}${ex ? ` (now ${ex.qty})` : ""}`, "ok");
+  $("results").classList.add("hidden");
+}
+
+let lastResults = [];
+async function lookup(q) {
+  q = q.trim(); if (!q) return;
+  flash("Looking up " + q + "...", "ok");
+  try {
+    const r = await fetch("/api/inv/lookup?q=" + encodeURIComponent(q));
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    lastResults = d.results || [];
+    if (!lastResults.length) { flash(`No product found for "${q}".`, "err"); $("results").classList.add("hidden"); return; }
+    if (lastResults.length === 1 && d.match !== "search") { addToCart(lastResults[0]); return; }
+    $("results-title").textContent = d.match === "search" ? `Search results for "${q}" - pick one` : `"${q}" matches ${lastResults.length} products - pick one`;
+    $("results-body").innerHTML = lastResults.map((v, i) => `
+      <tr><td>${esc(v.style)}</td><td><b>${esc(v.size)}</b></td><td class="mono">${esc(v.sku)}</td>
+      <td class="num">${v.warehouse_qty ?? "not stocked"}</td>
+      <td><button data-pick="${i}" ${v.warehouse_qty == null ? "disabled" : ""}>Add</button></td></tr>`).join("");
+    $("results").classList.remove("hidden");
+    flash(`${lastResults.length} match(es) - pick the right one.`, "ok");
+  } catch (e) { flash("Lookup failed: " + e.message, "err"); }
+}
+
+$("scan").addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); const q = $("scan").value; $("scan").value = ""; lookup(q); }
+});
+$("results-body").addEventListener("click", e => {
+  const i = e.target.dataset.pick; if (i !== undefined) { addToCart(lastResults[i]); $("scan").focus(); }
+});
+$("cart-body").addEventListener("input", e => {
+  const i = e.target.dataset.i; if (i !== undefined) { cart[i].qty = e.target.value; save();
+    $("btn-preview").disabled = !cart.some(c => parseInt(c.qty) > 0);
+    $("cart-count").textContent = cart.reduce((a, c) => a + (parseInt(c.qty) || 0), 0); }
+});
+$("cart-body").addEventListener("click", e => {
+  const i = e.target.dataset.rm; if (i !== undefined) { cart.splice(i, 1); save(); renderCart(); $("scan").focus(); }
+});
+$("btn-clear").onclick = () => { if (confirm("Clear the whole list?")) { cart = []; save(); renderCart(); $("scan").focus(); } };
+
+function show(step) { ["step-scan", "step-preview", "step-result"].forEach(s => $(s).classList.toggle("hidden", s !== step)); }
+
+$("btn-preview").onclick = async () => {
+  $("btn-preview").disabled = true; $("btn-preview").textContent = "Reading Shopify...";
+  try {
+    const r = await fetch("/api/inv/preview", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ lines: cart, note: $("note").value }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    previewId = d.preview_id;
+    $("preview-body").innerHTML = d.rows.map(p => `
+      <tr class="${!p.ok ? "row-bad" : p.warning ? "row-warn" : ""}">
+        <td>${esc(p.style)}</td><td><b>${esc(p.size)}</b></td><td class="mono">${esc(p.sku)}</td>
+        <td class="num"><b>-${p.qty}</b></td>
+        <td class="num">${p.ok ? p.current : "-"}</td><td class="arrow">&rarr;</td><td class="num"><b>${p.ok ? p.new : "-"}</b></td>
+        <td>${p.error ? `<span class="msg-err">${esc(p.error)}</span>` : p.warning ? `<span class="msg-warn">${esc(p.warning)}</span>` : ""}
+            <div>${links(p)}</div></td>
+      </tr>`).join("");
+    $("preview-summary").textContent = `${d.n_ok} item(s), ${d.units} unit(s) will be deducted.` +
+      (d.n_bad ? ` ${d.n_bad} row(s) can't be deducted and will be skipped.` : "");
+    $("btn-confirm").disabled = d.n_ok === 0;
+    $("btn-confirm").textContent = "Confirm and deduct";
+    $("working").classList.add("hidden");
+    show("step-preview");
+  } catch (e) { flash("Preview failed: " + e.message, "err"); }
+  finally { $("btn-preview").textContent = "Preview change"; renderCart(); }
+};
+$("btn-back").onclick = () => { show("step-scan"); $("scan").focus(); };
+
+$("btn-confirm").onclick = async () => {
+  $("btn-confirm").disabled = true; $("btn-back").disabled = true;
+  $("btn-confirm").textContent = "Deducting..."; $("working").classList.remove("hidden");
+  try {
+    const r = await fetch("/api/inv/deduct", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ preview_id: previewId }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+    let job;
+    for (;;) {
+      await new Promise(res => setTimeout(res, 2000));
+      const s = await fetch("/api/job_status/" + d.job_id); job = await s.json();
+      if (job.status === "done") break;
+    }
+    showResult(job.response);
+  } catch (e) {
+    showResult({ error: e.message });
+  } finally { $("btn-back").disabled = false; }
+};
+
+function showResult(res) {
+  const b = $("result-banner");
+  if (res.error) {
+    b.className = "banner err"; b.textContent = "Not completed: " + res.error + " Check the deduction log before trying again.";
+    $("result-body").innerHTML = "";
+  } else {
+    const bad = res.failed + res.mismatch;
+    b.className = "banner " + (bad ? "err" : "ok");
+    b.innerHTML = `<b>Deducted ${res.units} unit(s) across ${res.ok} item(s) from the Warehouse.</b>` +
+      (res.failed ? ` ${res.failed} item(s) were NOT deducted.` : "") +
+      (res.mismatch ? ` ${res.mismatch} item(s) need a look - see below (do NOT deduct them again).` : "") +
+      ` <span class="mono">Batch ${esc(res.batch_id)}</span>`;
+    $("result-body").innerHTML = res.lines.map(l => {
+      const pill = l.status === "ok" ? `<span class="pill ok">Done</span>` :
+                   l.status === "mismatch" ? `<span class="pill warn">Check</span>` : `<span class="pill bad">Not deducted</span>`;
+      return `<tr class="${l.status === "ok" ? "" : l.status === "mismatch" ? "row-warn" : "row-bad"}">
+        <td>${esc(l.style)}</td><td><b>${esc(l.size)}</b></td><td class="mono">${esc(l.sku)}</td><td class="num">-${l.qty}</td>
+        <td class="num">${l.before ?? "-"}</td><td class="arrow">&rarr;</td><td class="num"><b>${l.after ?? "-"}</b></td>
+        <td>${pill}${l.message ? `<div class="${l.status === "mismatch" ? "msg-warn" : "msg-err"}">${esc(l.message)}</div>` : ""}</td>
+        <td>${links(l)}</td></tr>`;
+    }).join("");
+    // clear the items that were deducted (or need checking); keep failed ones to retry
+    const keep = new Set(res.lines.filter(l => l.status === "error" || l.status === "skipped").map(l => String(l.inventory_item_id)));
+    cart = cart.filter(c => keep.has(String(c.inventory_item_id))); save(); $("note").value = "";
+  }
+  show("step-result");
+}
+$("btn-new").onclick = () => { renderCart(); show("step-scan"); $("flash").className = "flash"; $("scan").focus(); };
+
+// keep the cursor in the scan box so the scanner always types there
+document.addEventListener("click", e => {
+  if (!$("step-scan").classList.contains("hidden") && !e.target.closest("input,button,a")) $("scan").focus();
+});
+renderCart();
+</script>
+</body>
+</html>

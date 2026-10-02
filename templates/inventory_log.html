@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Deduction Log - Pack &amp; Deduct</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --border:#e3e5e9; --text:#1a1d23; --muted:#6b7280;
+          --accent:#0f766e; --accent-light:#ccfbf1; --warn:#b45309; --warn-bg:#fef3c7; --err:#b91c1c; --err-bg:#fee2e2; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); margin:0; padding:24px; }
+  header { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:16px; margin-bottom:20px; }
+  h1 { font-size:20px; margin:0; } .sub { color:var(--muted); font-size:13px; margin-top:4px; }
+  .links a { color:var(--muted); font-size:13px; margin-left:16px; }
+  input#search { padding:8px 12px; border:1px solid var(--border); border-radius:8px; font-size:14px; width:340px; max-width:100%; margin-bottom:14px; }
+  .wrap { background:var(--card); border:1px solid var(--border); border-radius:10px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); padding:10px 8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  td { padding:8px; border-bottom:1px solid var(--border); vertical-align:top; }
+  td.num { font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--muted); }
+  .pill { display:inline-block; padding:2px 8px; border-radius:999px; font-size:12px; font-weight:600; }
+  .pill.ok { background:var(--accent-light); color:#115e59; } .pill.bad { background:var(--err-bg); color:var(--err); }
+  .pill.warn { background:var(--warn-bg); color:var(--warn); }
+  .msg { font-size:12px; color:var(--muted); max-width:320px; }
+  a.small { font-size:12px; color:var(--accent); white-space:nowrap; }
+  .empty { padding:20px; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Deduction Log</h1>
+    <div class="sub">Every Pack &amp; Deduct change made to All Star Elite Shopify &rarr; Warehouse, newest first.</div>
+  </div>
+  <div class="links">
+    <a href="/inventory">Pack &amp; Deduct</a>
+    <a href="/" target="dashboard_tab">Shipping dashboard</a>
+    <a href="/logout">Log out</a>
+  </div>
+</header>
+<input id="search" placeholder="Search style, SKU, barcode, note or batch...">
+<div class="wrap">
+  <table>
+    <thead><tr><th>When</th><th>Style</th><th>Size</th><th>SKU</th><th>Qty</th><th>Before &rarr; After</th><th>Status</th><th>Note</th><th>Batch</th><th>Links</th></tr></thead>
+    <tbody id="body"></tbody>
+  </table>
+  <div id="empty" class="empty" hidden>No deductions yet.</div>
+</div>
+<script>
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = iso => { try { return new Date(iso).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}); } catch (e) { return iso; } };
+let t;
+async function load() {
+  const q = document.getElementById("search").value;
+  const d = await (await fetch("/api/inv/log?search=" + encodeURIComponent(q))).json();
+  document.getElementById("empty").hidden = d.entries.length > 0;
+  document.getElementById("body").innerHTML = d.entries.map(e => {
+    const pill = e.status === "ok" ? `<span class="pill ok">Done</span>` :
+                 e.status === "mismatch" ? `<span class="pill warn">Check</span>` : `<span class="pill bad">Not deducted</span>`;
+    const ba = e.before == null ? "-" : `${e.before} &rarr; <b>${e.after ?? "-"}</b>` + (e.rechecked != null ? `<div class="msg">re-check: ${e.rechecked}</div>` : "");
+    return `<tr><td class="num">${esc(fmt(e.at))}</td><td>${esc(e.style)}</td><td><b>${esc(e.size)}</b></td>
+      <td class="mono">${esc(e.sku)}</td><td class="num">-${e.qty}</td><td class="num">${ba}</td>
+      <td>${pill}${e.message ? `<div class="msg">${esc(e.message)}</div>` : ""}</td>
+      <td class="msg">${esc(e.note)}</td><td class="mono">${esc(e.batch_id)}</td>
+      <td>${e.history ? `<a class="small" href="${esc(e.history)}" target="_blank">Inventory history</a>` : ""}
+          ${e.edit ? `<br><a class="small" href="${esc(e.edit)}" target="_blank">Edit style/size</a>` : ""}</td></tr>`;
+  }).join("");
+}
+document.getElementById("search").addEventListener("input", () => { clearTimeout(t); t = setTimeout(load, 250); });
+load();
+</script>
+</body>
+</html>

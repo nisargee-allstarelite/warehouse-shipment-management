@@ -22,6 +22,8 @@ from dotenv import load_dotenv
 import tiktok_api
 from bucketing import bucket_orders
 from shipping import ship_orders, build_combined_label_pdf, log_shipping_results, get_shipping_history, reconcile_failed_orders, LABELS_DIR
+import shopify_inventory
+import inventory_deduct
 
 load_dotenv()
 
@@ -438,6 +440,69 @@ def api_job_status(job_id):
     if not job:
         return jsonify({"error": "Unknown job_id"}), 404
     return jsonify(job)
+
+
+# --- Pack & Deduct: subtract packed units from the ASE Shopify Warehouse ---
+# Separate page (/inventory) on the same login, meant to stay open in its
+# own tab next to the shipping dashboard. Scan -> preview -> confirm.
+# See inventory_deduct.py for the full safety flow.
+
+@app.route("/inventory")
+def inventory_page():
+    return render_template("inventory.html", configured=shopify_inventory.get_client().configured())
+
+
+@app.route("/inventory/log")
+def inventory_log_page():
+    return render_template("inventory_log.html")
+
+
+@app.route("/api/inv/lookup")
+def api_inv_lookup():
+    try:
+        return jsonify(shopify_inventory.get_client().find(request.args.get("q", "")))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
+@app.route("/api/inv/preview", methods=["POST"])
+def api_inv_preview():
+    data = request.get_json() or {}
+    pv = inventory_deduct.preview(data.get("lines") or [], data.get("note", ""))
+    if not pv["rows"]:
+        return jsonify({"error": "Nothing to deduct -- add at least one item with qty 1 or more."}), 400
+    return jsonify(pv)
+
+
+@app.route("/api/inv/deduct", methods=["POST"])
+def api_inv_deduct():
+    """Same async job pattern as /api/ship_bucket: returns a job_id at once,
+    the deduct + 10s re-check runs in the background. A preview can only be
+    confirmed once (inventory_deduct.claim)."""
+    data = request.get_json() or {}
+    p, err = inventory_deduct.claim(data.get("preview_id", ""))
+    if err:
+        return jsonify({"error": err}), 409
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {"status": "running", "response": None}
+
+    def run_job():
+        try:
+            response = inventory_deduct.run(p)
+        except Exception as e:
+            response = {"error": str(e)}
+        with jobs_lock:
+            jobs[job_id] = {"status": "done", "response": response}
+
+    threading.Thread(target=run_job, daemon=True).start()
+    return jsonify({"job_id": job_id, "status": "started"})
+
+
+@app.route("/api/inv/log")
+def api_inv_log():
+    entries = inventory_deduct.read_log(search=request.args.get("search", ""))
+    return jsonify({"entries": entries, "count": len(entries)})
 
 
 if __name__ == "__main__":

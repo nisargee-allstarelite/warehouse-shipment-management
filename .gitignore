@@ -17,3 +17,6 @@ venv/
 # Logs and data
 server.log
 shipping_history.jsonl
+
+# Pack & Deduct log (server data)
+inventory_log.jsonl
