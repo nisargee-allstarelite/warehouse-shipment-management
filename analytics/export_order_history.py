@@ -56,19 +56,21 @@ def call(method, path, query=None, body=None):
     raise SystemExit("Stopping: TikTok kept returning errors (see above). Nothing was changed.")
 
 
-def search_window(ge, lt):
+def search_pages(ge, lt):
+    """Yields one page (up to 100 orders) at a time, so memory stays small."""
     path = f"/order/{T.VERSION}/orders/search"
-    out, token = [], None
+    token = None
     while True:
         q = {"page_size": PAGE_SIZE, "sort_field": "create_time", "sort_order": "ASC"}
         if token:
             q["page_token"] = token
         d = call("POST", path, q, {"create_time_ge": ge, "create_time_lt": lt})
         orders = d.get("orders") or []
-        out.extend(orders)
+        if orders:
+            yield orders
         token = d.get("next_page_token")
         if not token or not orders:
-            return out
+            return
 
 
 def details(ids):
@@ -115,7 +117,10 @@ def clean(o):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=365)
+    ap.add_argument("--summary-only", help="path of an existing export to summarize")
     a = ap.parse_args()
+    if a.summary_only:
+        return summarize(a.summary_only)
     now = int(time.time())
     start = now - a.days * 86400
     os.makedirs("analytics/data", exist_ok=True)
@@ -127,22 +132,24 @@ def main():
         ge = start
         while ge < now:
             lt = min(ge + WINDOW_DAYS * 86400, now + 1)
-            orders = search_window(ge, lt)
-            if orders and need_details is None:
-                raw_keys = set(orders[0].keys())
-                need_details = "seller_note" not in raw_keys and "line_items" not in raw_keys
+            n_window = 0
+            for orders in search_pages(ge, lt):
+                if need_details is None:
+                    raw_keys = set(orders[0].keys())
+                    need_details = "seller_note" not in raw_keys
+                    if need_details:
+                        print("  (search results don't include seller notes - fetching full order details too)")
                 if need_details:
-                    print("  (search results don't include notes - fetching full details too)")
-            if orders and need_details:
-                orders = details([o["id"] for o in orders])
-            for o in orders:
-                if o.get("id") in seen:
-                    continue
-                seen.add(o.get("id"))
-                f.write(json.dumps(clean(o)) + "\n")
-                n_written += 1
+                    orders = details([o["id"] for o in orders])
+                for o in orders:
+                    if o.get("id") in seen:
+                        continue
+                    seen.add(o.get("id"))
+                    f.write(json.dumps(clean(o)) + "\n")
+                    n_written += 1
+                    n_window += 1
             print(f"{datetime.fromtimestamp(ge, timezone.utc):%Y-%m-%d} -> "
-                  f"{datetime.fromtimestamp(lt, timezone.utc):%Y-%m-%d}: {len(orders)} orders (total {n_written})")
+                  f"{datetime.fromtimestamp(lt, timezone.utc):%Y-%m-%d}: {n_window} orders (total {n_written})")
             ge = lt
     print(f"\nSaved {n_written} orders to {out_path}")
     print("Fields TikTok returned:", ", ".join(sorted(raw_keys)))
@@ -150,14 +157,13 @@ def main():
 
 
 def summarize(path):
-    rows = [json.loads(x) for x in open(path)]
-    if not rows:
-        print("No orders found.")
-        return
+    # streamed line by line -- the server has little memory
     st, months, cats = collections.Counter(), collections.Counter(), collections.Counter()
     pnames, skus = collections.Counter(), collections.Counter()
-    with_note = parsed_ok = with_seller_sku = multi_cat = 0
-    for r in rows:
+    with_note = parsed_ok = with_seller_sku = multi_cat = n = 0
+    for x in open(path):
+        r = json.loads(x)
+        n += 1
         st[r["status"]] += 1
         months[datetime.fromtimestamp(int(r["create_time"]), timezone.utc).strftime("%Y-%m")] += 1
         if (r["seller_note"] or "").strip():
@@ -175,7 +181,9 @@ def summarize(path):
                 skus["has"] += 1
         if any(li.get("seller_sku") for li in r["line_items"]):
             with_seller_sku += 1
-    n = len(rows)
+    if not n:
+        print("No orders found.")
+        return
     pct = lambda x: f"{x} ({100 * x / n:.0f}%)"
     print("\n========== SUMMARY ==========")
     print(f"Orders: {n}   first {min(months)}  last {max(months)}")
