@@ -8,8 +8,8 @@ Run on the server from the repo folder:
 
 Output: analytics/data/orders_<date>.jsonl  (one order per line) + a summary.
 
-Privacy: buyer name, phone, email and street address are DROPPED. Kept only:
-state, and a one-way hashed buyer id (to count repeat buyers, not identify).
+Privacy: buyer name, email, nickname, avatar, message and street address are
+DROPPED. Kept: state, and a one-way hashed buyer id (repeat buyers, not identity).
 
 Token safety: this script NEVER refreshes the TikTok token (refreshing here
 would rotate the refresh token and break the running dashboard). If the
@@ -89,29 +89,25 @@ def state_of(addr):
     return None
 
 
+PII_FIELDS = ("recipient_address", "buyer_email", "buyer_nickname", "buyer_avatar", "buyer_message", "user_id")
+
+
 def clean(o):
-    pay = o.get("payment") or {}
+    """Keeps EVERY field TikTok returns (order_type, room_id, sku_name, ...)
+    except buyer personal info. Adds state, hashed buyer id and parsed note."""
     lines = split_multi_item_note(o.get("seller_note", ""))
     parsed = parse_note_lines(lines) if lines else []
     uid = o.get("user_id") or ""
-    return {
-        "order_id": o.get("id"),
-        "status": o.get("status"),
-        "create_time": o.get("create_time"),
-        "paid_time": o.get("paid_time"),
-        "cancel_reason": o.get("cancel_reason"),
-        "buyer": hashlib.sha256(("ase-" + uid).encode()).hexdigest()[:16] if uid else None,
-        "state": state_of(o.get("recipient_address")),
-        "payment": {k: pay.get(k) for k in ("currency", "total_amount", "sub_total", "original_total_product_price",
-                                            "seller_discount", "platform_discount", "shipping_fee", "tax")},
-        "line_items": [{k: li.get(k) for k in ("product_id", "product_name", "sku_id", "sku_name", "seller_sku",
-                                               "sale_price", "original_price", "seller_discount", "platform_discount",
-                                               "display_status", "is_gift", "sku_type")}
-                       for li in o.get("line_items") or []],
-        "seller_note": o.get("seller_note", ""),
-        "note_items": [{k: e.get(k) for k in ("bucket_key", "name", "sku", "color", "size", "qty", "raw")}
-                       for e in parsed],
-    }
+    r = {k: v for k, v in o.items() if k not in PII_FIELDS}
+    for li in r.get("line_items") or []:
+        li.pop("sku_image", None)
+    r["order_id"] = o.get("id")
+    r["seller_note"] = o.get("seller_note", "")
+    r["buyer"] = hashlib.sha256(("ase-" + uid).encode()).hexdigest()[:16] if uid else None
+    r["state"] = state_of(o.get("recipient_address"))
+    r["note_items"] = [{k: e.get(k) for k in ("bucket_key", "name", "sku", "color", "size", "qty", "raw")}
+                       for e in parsed]
+    return r
 
 
 def main():
@@ -160,11 +156,18 @@ def summarize(path):
     # streamed line by line -- the server has little memory
     st, months, cats = collections.Counter(), collections.Counter(), collections.Counter()
     pnames, skus = collections.Counter(), collections.Counter()
+    otype, otype_note, rooms = collections.Counter(), collections.Counter(), set()
     with_note = parsed_ok = with_seller_sku = multi_cat = n = 0
     for x in open(path):
         r = json.loads(x)
         n += 1
         st[r["status"]] += 1
+        otype[r.get("order_type")] += 1
+        if (r.get("seller_note") or "").strip():
+            otype_note[r.get("order_type")] += 1
+        for li in r.get("line_items") or []:
+            if li.get("room_id"):
+                rooms.add(li["room_id"])
         months[datetime.fromtimestamp(int(r["create_time"]), timezone.utc).strftime("%Y-%m")] += 1
         if (r["seller_note"] or "").strip():
             with_note += 1
@@ -189,6 +192,8 @@ def summarize(path):
     print(f"Orders: {n}   first {min(months)}  last {max(months)}")
     print("By status:", dict(st.most_common()))
     print("By month:", dict(sorted(months.items())))
+    print("By order type (orders | with note):", {k: (v, otype_note[k]) for k, v in otype.most_common()})
+    print(f"Distinct LIVE rooms (streams): {len(rooms)}")
     print(f"With a seller note: {pct(with_note)}")
     print(f"Note matched to a product/category: {pct(parsed_ok)}   (2+ categories in one order: {multi_cat})")
     print(f"Has a seller SKU on the listing (direct listings): {pct(with_seller_sku)}")
