@@ -20,3 +20,4 @@ shipping_history.jsonl
 
 # Pack & Deduct log (server data)
 inventory_log.jsonl
+analytics/data/
