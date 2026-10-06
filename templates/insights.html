@@ -1,0 +1,502 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales Insights</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --border:#e3e5e9; --text:#1a1d23; --muted:#6b7280; --faint:#9ca3af;
+          --accent:#0f766e; --series:#2a78d6; --series-soft:#cde2fb; --grid:#eef0f3; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--bg); color:var(--text); margin:0; padding:24px; font-size:14px; }
+  header { display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px; margin-bottom:16px; }
+  h1 { font-size:20px; margin:0; } h2 { font-size:15px; margin:0; }
+  .sub { color:var(--muted); font-size:12px; margin-top:4px; }
+  .links a { color:var(--muted); font-size:13px; margin-left:16px; }
+  .upd { display:flex; align-items:center; gap:10px; justify-content:flex-end; margin-top:8px; color:var(--muted); font-size:12px; }
+  button, .btn { background:var(--accent); color:#fff; border:none; padding:7px 14px; border-radius:8px; font-size:13px; cursor:pointer; }
+  button:disabled { background:#d1d5db; cursor:not-allowed; }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:8px; overflow:hidden; }
+  .seg button { background:#fff; color:var(--muted); border-radius:0; padding:5px 10px; font-size:12px; }
+  .seg button.on { background:var(--text); color:#fff; }
+  .filters { position:sticky; top:0; z-index:5; background:var(--bg); padding:10px 0; display:flex; flex-wrap:wrap; gap:10px; align-items:center; border-bottom:1px solid var(--border); margin-bottom:16px; }
+  #f-style { max-width:280px; } #f-cat { max-width:220px; }
+  select, input[type=date] { padding:6px 8px; border:1px solid var(--border); border-radius:8px; font-size:13px; background:#fff; }
+  .chip { background:var(--series-soft); color:#104281; padding:4px 10px; border-radius:999px; font-size:12px; font-weight:600; }
+  .clear { background:transparent; color:var(--muted); text-decoration:underline; padding:4px; }
+  .card { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card-h { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:12px; }
+  .n { color:var(--faint); font-size:12px; font-weight:400; margin-left:8px; }
+  .kpis { display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); gap:12px; margin-bottom:16px; }
+  .kpi { background:var(--card); border:1px solid var(--border); border-radius:10px; padding:14px 16px; }
+  .kpi .l { color:var(--muted); font-size:12px; } .kpi .v { font-size:24px; font-weight:650; margin-top:4px; font-variant-numeric:tabular-nums; }
+  .kpi .s { color:var(--faint); font-size:12px; margin-top:2px; }
+  table { width:100%; border-collapse:collapse; }
+  th { text-align:right; font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); font-weight:600; padding:8px; border-bottom:1px solid var(--border); white-space:nowrap; }
+  th:first-child, td:first-child { text-align:left; }
+  td { padding:7px 8px; border-bottom:1px solid var(--grid); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  tr.cat td { font-weight:600; cursor:pointer; } tr.sty td { cursor:pointer; } tr.sty td:first-child { padding-left:28px; font-weight:400; }
+  tr:hover td { background:#f9fafb; } tr.sel td { background:#eef5fd; }
+  tr.low td { color:var(--faint); }
+  .caret { display:inline-block; width:14px; color:var(--muted); }
+  .rng { position:relative; width:100px; height:14px; display:inline-block; vertical-align:middle; }
+  .rng .trk { position:absolute; top:6px; left:0; right:0; height:2px; background:var(--grid); }
+  .rng .bar { position:absolute; top:4px; height:6px; background:var(--series-soft); border-radius:3px; }
+  .rng .dot { position:absolute; top:2px; width:10px; height:10px; margin-left:-5px; border-radius:50%; background:var(--series); border:2px solid #fff; }
+  .rtxt { color:var(--muted); font-size:12px; margin-left:8px; display:inline-block; min-width:70px; text-align:left; }
+  .tablewrap { overflow-x:auto; max-height:560px; overflow-y:auto; }
+  .tablewrap thead th { position:sticky; top:0; background:#fff; }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .hbar { display:grid; grid-template-columns:110px 1fr 70px; gap:8px; align-items:center; margin:4px 0; font-size:13px; }
+  .hbar .lbl { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .hbar .trk { background:var(--grid); border-radius:0 4px 4px 0; height:14px; }
+  .hbar .fill { background:var(--series); height:14px; border-radius:0 4px 4px 0; min-width:2px; }
+  .hbar .val { text-align:right; font-variant-numeric:tabular-nums; color:var(--muted); }
+  .hint { background:#f3f8fe; color:#184f95; border-radius:8px; padding:8px 12px; font-size:12px; margin-bottom:12px; }
+  .foot { color:var(--faint); font-size:11px; margin-top:12px; }
+  .scgrid { display:grid; grid-template-columns:repeat(2, minmax(0,1fr)); gap:16px; }
+  .scpanel { border:1px solid var(--grid); border-radius:10px; padding:14px; min-width:0; }
+  .scpanel.wide { grid-column:1 / -1; }
+  .scpanel h3 { font-size:13px; margin:0 0 10px; display:flex; justify-content:space-between; }
+  .scpanel h3 span { color:var(--faint); font-weight:400; font-size:12px; }
+  table.sc { width:100%; border-collapse:separate; border-spacing:3px; table-layout:fixed; }
+  table.sc td, table.sc th { padding:0; text-align:center; font-size:11px; border:none; }
+  table.sc tr:hover td { background:inherit; }
+  table.sc td.c { height:30px; border-radius:4px; }
+  table.sc th.sz { color:var(--muted); font-weight:600; height:20px; }
+  table.sc td.rowh { text-align:left; font-weight:600; color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding-right:6px; }
+  table.sc td.vb { height:50px; vertical-align:bottom; }
+  .vbar { margin:0 auto; width:60%; background:#9ca3af; border-radius:3px 3px 0 0; min-height:2px; }
+  .vlab { font-size:10px; color:var(--muted); margin-bottom:2px; }
+  table.sc td.tb { text-align:left; padding-left:8px; white-space:nowrap; }
+  .tbar { display:inline-block; height:10px; background:#9ca3af; border-radius:0 3px 3px 0; vertical-align:middle; }
+  .tval { font-size:11px; color:var(--muted); margin-left:6px; vertical-align:middle; }
+  @media (max-width:1100px) { .scgrid { grid-template-columns:1fr; } }
+  .scrow { display:grid; grid-template-columns:minmax(260px, 380px) 1fr; gap:24px; align-items:start; padding:12px 0; border-top:1px solid var(--grid); }
+  .scrow:first-child { border-top:none; padding-top:0; }
+  .cols2 { column-count:2; column-gap:32px; } .cols2 .hbar { break-inside:avoid; }
+  @media (max-width:900px) { .scrow { grid-template-columns:1fr; } .cols2 { column-count:1; } }
+  .heat.fixed { width:auto; border-collapse:separate; border-spacing:3px; }
+  .heat.fixed td { border:none; border-radius:4px; min-width:44px; height:30px; font-size:11px; }
+  .heat.fixed td.rowh { min-width:110px; border-radius:0; }
+  .heat.fixed th { font-weight:600; color:var(--muted); }
+  .grp { font-size:11px; color:var(--faint); margin:10px 0 2px; text-transform:uppercase; letter-spacing:.03em; }
+  .sub-h { font-size:12px; color:var(--muted); font-weight:600; text-transform:uppercase; letter-spacing:.03em; margin:4px 0 8px; }
+  .heat td { padding:0; border:2px solid #fff; text-align:center; font-size:11px; height:28px; min-width:34px; cursor:default; }
+  .heat th { padding:4px; text-align:center; border:none; font-size:11px; }
+  .heat td.rowh { text-align:left; font-weight:600; color:var(--muted); padding:0 8px; background:#fff; }
+  .heat td.tot { background:#fff; color:var(--muted); font-weight:600; }
+  .heat td.top { color:#0f766e; font-weight:800; background:#e6f4f1; }
+  .seg button:focus { outline:none; } .seg button:focus-visible { outline:2px solid #2a78d6; outline-offset:-2px; }
+  .seg button:disabled { background:#f3f4f6; color:#c7c9ce; cursor:not-allowed; }
+  .legend { display:flex; align-items:center; gap:6px; color:var(--muted); font-size:11px; margin-top:8px; }
+  .legend .sw { width:18px; height:10px; border-radius:2px; }
+  .empty { color:var(--faint); padding:20px; text-align:center; }
+  .cmp { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:12px; margin-bottom:12px; }
+  .cmp .kpi .v { font-size:20px; }
+  #tip { position:fixed; pointer-events:none; background:#1a1d23; color:#fff; font-size:12px; padding:6px 8px; border-radius:6px; display:none; z-index:20; white-space:nowrap; }
+  @media (max-width:900px) { .kpis { grid-template-columns:repeat(2,1fr); } .grid2 { grid-template-columns:1fr; } .cmp { grid-template-columns:1fr; } body { padding:16px; } }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Sales Insights</h1>
+    <div class="sub">Live auctions · orders with product details</div>
+  </div>
+  <div>
+    <div class="links">
+      <a href="/" target="dashboard_tab">Shipping dashboard</a>
+      <a href="/inventory" target="inventory_tab">Pack &amp; Deduct</a>
+      <a href="/logout">Log out</a>
+    </div>
+    <div class="upd"><span id="updated">Data updated: –</span><button id="btn-refresh">Refresh data</button></div>
+  </div>
+</header>
+
+<div class="filters">
+  <select id="f-range">
+    <option value="all">All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option>
+    <option value="90">Last 90 days</option><option value="month">This month</option><option value="custom">Custom</option>
+  </select>
+  <span id="custom" hidden><input type="date" id="f-from"> – <input type="date" id="f-to"></span>
+  <select id="f-cat"><option value="">All categories</option></select>
+  <select id="f-style"><option value="">All styles</option></select>
+  <span id="sel-chip"></span>
+</div>
+
+<div class="kpis">
+  <div class="kpi"><div class="l">Revenue</div><div class="v" id="k-rev">–</div></div>
+  <div class="kpi"><div class="l">Units Sold</div><div class="v" id="k-units">–</div></div>
+  <div class="kpi"><div class="l">Avg Price</div><div class="v" id="k-avg">–</div><div class="s">per unit</div></div>
+  <div class="kpi"><div class="l">Orders Analyzed</div><div class="v" id="k-cov">–</div><div class="s" id="k-cov-s"></div></div>
+</div>
+
+<div class="card">
+  <div class="card-h">
+    <h2>Category &amp; Style Performance<span class="n" id="n-perf"></span></h2>
+    <div class="seg" id="seg-sort"><button data-v="revenue" class="on">By revenue</button><button data-v="units">By units</button></div>
+  </div>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Category / Style</th><th>Units</th><th>Revenue</th><th>Avg Price</th><th>Typical Price</th><th>Most Common Price</th><th>Price Range</th></tr></thead>
+      <tbody id="perf-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="card-h">
+    <h2>Size &amp; Color Breakdown<span class="n" id="n-sc"></span></h2>
+    <div class="seg" id="seg-sc"><button data-v="units" class="on">Units</button><button data-v="revenue">Revenue</button><button data-v="avg">Avg Price</button><button data-v="aov">AOV</button></div>
+  </div>
+  <div class="hint" id="sc-hint" hidden>Select a category above for a clean size breakdown. All categories mixes jersey, shoe and waist sizes.</div>
+  <div class="foot" id="sc-foot" style="margin:0 0 12px;"></div>
+  <div id="sc-groups" class="scgrid"></div>
+</div>
+
+<div class="card">
+  <div class="card-h">
+    <h2>Sales Timing<span class="n" id="n-time"></span></h2>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <div class="seg" id="seg-per"><button data-v="total" class="on">All Days Combined</button><button data-v="perday">Typical Day</button></div>
+      <div class="seg" id="seg-time"><button data-v="orders" class="on">Orders</button><button data-v="units">Units</button><button data-v="revenue">Revenue</button><button data-v="avg">Avg Price</button><button data-v="aov">AOV</button></div>
+    </div>
+  </div>
+  <div style="overflow-x:auto;"><table class="heat" id="heat"></table></div>
+  <div class="legend" id="heat-legend"></div>
+  <div class="sub-h" style="margin-top:20px;">By Month <span class="n" id="n-month"></span></div>
+  <div style="height:240px;"><canvas id="trend"></canvas></div>
+</div>
+
+<div class="card">
+  <div class="card-h"><h2>Bundle Analysis<span class="n" id="n-bun"></span></h2></div>
+  <div class="cmp">
+    <div class="kpi"><div class="l">Bundle Orders</div><div class="v" id="b-share">–</div><div class="s" id="b-share-s"></div></div>
+    <div class="kpi"><div class="l">Bundle Avg Order Value</div><div class="v" id="b-aov-m">–</div><div class="s" id="b-items"></div></div>
+    <div class="kpi"><div class="l">Bundle Price per Item</div><div class="v" id="b-ppi">–</div><div class="s" id="b-ppi-s"></div></div>
+  </div>
+  <div class="tablewrap" style="max-height:420px;">
+    <table>
+      <thead><tr><th>Bought Together</th><th>Orders</th><th>Avg Order Value</th></tr></thead>
+      <tbody id="bun-body"></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="tip"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money = v => v == null || isNaN(v) ? "–" : "$" + (v >= 10000 ? Math.round(v).toLocaleString() : v.toLocaleString(undefined,{maximumFractionDigits: v >= 100 ? 0 : 2, minimumFractionDigits: v >= 100 ? 0 : 2}));
+const int = v => (v || 0).toLocaleString();
+const LOW = 20;   // fewer units than this -> greyed out
+const DAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+const SIZE_ORDER = ["XXS","XS","S","M","L","XL","2XL","XXL","3XL","XXXL","4XL","5XL","OS"];
+const BLUES = ["#f3f8fe","#cde2fb","#9ec5f4","#6da7ec","#3987e5","#256abf","#184f95","#0d366b"];
+
+let D = null, R = [], C = {};
+const st = { range:"all", from:null, to:null, cat:"", style:"", sort:"revenue", sc:"units", time:"orders", per:"total", open:new Set() };
+let trendChart = null;
+
+function tip(e, html) { const t = $("tip"); if (!html) { t.style.display = "none"; return; }
+  t.innerHTML = html; t.style.display = "block";
+  const w = t.offsetWidth, h = t.offsetHeight;   // keep the tooltip on screen near the edges
+  t.style.left = (e.clientX + 12 + w > window.innerWidth ? e.clientX - w - 12 : e.clientX + 12) + "px";
+  t.style.top = (e.clientY + 12 + h > window.innerHeight ? e.clientY - h - 12 : e.clientY + 12) + "px"; }
+
+// ---------- data ----------
+async function load() {
+  const r = await fetch("/api/insights/data"); D = await r.json();
+  C = Object.fromEntries(D.cols.map((c, i) => [c, i]));
+  R = D.rows;
+  $("updated").textContent = "Data updated: " + (D.updated_at ? new Date(D.updated_at * 1000).toLocaleString([], {month:"short", day:"numeric", hour:"numeric", minute:"2-digit"}) : "–");
+  fillCats(); render();
+}
+function dateBounds() {
+  const today = new Date(); const iso = d => d.toISOString().slice(0, 10);
+  if (st.range === "all") return [null, null];
+  if (st.range === "month") return [iso(new Date(today.getFullYear(), today.getMonth(), 1)), null];
+  if (st.range === "custom") return [st.from || null, st.to || null];
+  const d = new Date(); d.setDate(d.getDate() - parseInt(st.range)); return [iso(d), null];
+}
+function inDate(r) { const [a, b] = dateBounds(); const d = r[C.date]; return (!a || d >= a) && (!b || d <= b); }
+function inSel(r) { return (!st.cat || r[C.category] === st.cat) && (!st.style || r[C.style] === st.style); }
+function rowsDate() { return R.filter(inDate); }
+function rowsSel() { return R.filter(r => inDate(r) && inSel(r)); }
+
+function stats(rows) {
+  let units = 0, rev = 0; const prices = [], orders = new Set();
+  for (const r of rows) { const u = r[C.units]; units += u; rev += r[C.revenue]; orders.add(r[C.order]);
+    const p = u ? r[C.revenue] / u : 0; for (let k = 0; k < u; k++) prices.push(p); }
+  prices.sort((a, b) => a - b);
+  const counts = {}; let mode = null, best = 0;
+  for (const p of prices) { const k = Math.round(p); counts[k] = (counts[k] || 0) + 1; if (counts[k] > best || (counts[k] === best && k < mode)) { best = counts[k]; mode = k; } }
+  const med = prices.length ? (prices.length % 2 ? prices[(prices.length - 1) / 2] : (prices[prices.length / 2 - 1] + prices[prices.length / 2]) / 2) : null;
+  const q = f => prices.length ? prices[Math.min(prices.length - 1, Math.floor(f * prices.length))] : null;
+  return { units, rev, orders: orders.size, avg: units ? rev / units : null, med, mode, lo: q(0.05), hi: q(0.95), min: prices[0], max: prices[prices.length - 1] };
+}
+
+// ---------- filters ----------
+function fillCats() {
+  const cats = {}; for (const r of R) cats[r[C.category]] = (cats[r[C.category]] || 0) + r[C.revenue];
+  $("f-cat").innerHTML = '<option value="">All categories</option>' + Object.entries(cats).sort((a, b) => b[1] - a[1]).map(([c]) => `<option>${esc(c)}</option>`).join("");
+}
+function fillStyles() {
+  const sty = {}; for (const r of R) if (!st.cat || r[C.category] === st.cat) sty[r[C.style]] = (sty[r[C.style]] || 0) + r[C.revenue];
+  $("f-style").innerHTML = '<option value="">All styles</option>' + Object.entries(sty).sort((a, b) => b[1] - a[1]).map(([s]) => `<option ${s === st.style ? "selected" : ""}>${esc(s)}</option>`).join("");
+}
+function select(cat, style) {
+  st.cat = cat || ""; st.style = style || "";
+  $("f-cat").value = st.cat; fillStyles(); $("f-style").value = st.style;
+  if (st.cat) st.open.add(st.cat);
+  render();
+}
+$("f-range").onchange = e => { st.range = e.target.value; $("custom").hidden = st.range !== "custom"; render(); };
+$("f-from").onchange = e => { st.from = e.target.value; render(); };
+$("f-to").onchange = e => { st.to = e.target.value; render(); };
+$("f-cat").onchange = e => select(e.target.value, "");
+$("f-style").onchange = e => { const s = e.target.value;
+  const r = s && R.find(x => x[C.style] === s && (!st.cat || x[C.category] === st.cat)); select(r ? r[C.category] : st.cat, s); };
+function seg(id, key) { $(id).addEventListener("click", e => { const v = e.target.dataset.v; if (!v) return;
+  st[key] = v; [...$(id).children].forEach(b => b.classList.toggle("on", b.dataset.v === v)); render(); }); }
+seg("seg-sort", "sort"); seg("seg-sc", "sc"); seg("seg-time", "time"); seg("seg-per", "per");
+
+// ---------- render ----------
+function render() {
+  const sel = rowsSel();
+  const chip = st.style ? `${st.cat} › ${st.style}` : st.cat;
+  $("sel-chip").innerHTML = chip ? `<span class="chip">${esc(chip)}</span> <button class="clear" onclick="select('','')">Clear</button>` : "";
+  kpis(sel); perf(); sizesColors(sel); timing(sel); bundles();
+}
+
+function kpis(rows) {
+  const s = stats(rows);
+  $("k-rev").textContent = money(s.rev); $("k-units").textContent = int(s.units); $("k-avg").textContent = money(s.avg);
+  const [a, b] = dateBounds(); let tot = 0;
+  for (const [d, n] of Object.entries(D.totals_by_date)) if ((!a || d >= a) && (!b || d <= b)) tot += n;
+  const analyzed = new Set(rowsDate().map(r => r[C.order])).size;
+  $("k-cov").textContent = `${int(analyzed)} of ${int(tot)}`;
+  $("k-cov-s").textContent = tot ? `${(100 * analyzed / tot).toFixed(1)}% of auction orders` : "";
+}
+
+function months() { return [...new Set(R.map(r => r[C.date].slice(0, 7)))].sort(); }
+function spark(rows) {
+  const ms = months().slice(-3), v = ms.map(m => rows.filter(r => r[C.date].startsWith(m)).reduce((a, r) => a + r[C.units], 0));
+  const mx = Math.max(...v, 1), w = 70, h = 20, x = i => 4 + i * (w - 8) / Math.max(ms.length - 1, 1), y = q => h - 3 - (q / mx) * (h - 6);
+  const pts = v.map((q, i) => `${x(i)},${y(q)}`).join(" ");
+  const title = ms.map((m, i) => `${m}: ${v[i]}`).join(" · ");
+  return `<svg width="${w}" height="${h}" aria-label="${title}"><title>${title}</title><polyline points="${pts}" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round"/>${v.map((q, i) => `<circle cx="${x(i)}" cy="${y(q)}" r="2.5" fill="#2a78d6"/>`).join("")}</svg>`;
+}
+function rangeCell(s, scale) {
+  if (s.lo == null) return "–";
+  const L = v => Math.min(100, 100 * v / scale);
+  const t = `Lowest ${money(s.min)} · Highest ${money(s.max)}`;
+  return `<span data-tip="${t}"><span class="rng"><span class="trk"></span><span class="bar" style="left:${L(s.lo)}%;width:${Math.max(L(s.hi) - L(s.lo), 1)}%"></span><span class="dot" style="left:${L(s.avg)}%"></span></span><span class="rtxt">${money(s.lo)}–${money(s.hi)}</span></span>`;
+}
+function perf() {
+  const rows = rowsDate(), byCat = {};
+  for (const r of rows) (byCat[r[C.category]] ||= []).push(r);
+  const key = st.sort === "units" ? "units" : "rev";
+  const cats = Object.entries(byCat).map(([c, rs]) => ({ c, rs, s: stats(rs) })).sort((a, b) => b.s[key] - a.s[key]);
+  const allP = rows.map(r => r[C.revenue] / r[C.units]).sort((a, b) => a - b);
+  const scale = allP.length ? allP[Math.floor(allP.length * 0.97)] : 100;
+  $("n-perf").textContent = `${int(new Set(rows.map(r => r[C.order])).size)} orders`;
+  let h = "";
+  for (const { c, rs, s } of cats) {
+    const open = st.open.has(c);
+    h += `<tr class="cat ${s.units < LOW ? "low" : ""} ${st.cat === c && !st.style ? "sel" : ""}" data-cat="${esc(c)}">
+      <td><span class="caret">${open ? "▾" : "▸"}</span>${esc(c)}</td><td>${int(s.units)}</td><td>${money(s.rev)}</td><td>${money(s.avg)}</td>
+      <td>${money(s.med)}</td><td>${money(s.mode)}</td><td>${rangeCell(s, scale)}</td></tr>`;
+    if (open) {
+      const bySty = {}; for (const r of rs) (bySty[r[C.style]] ||= []).push(r);
+      const ss = Object.entries(bySty).map(([y, rr]) => ({ y, rr, s: stats(rr) })).sort((a, b) => b.s[key] - a.s[key]);
+      for (const { y, rr, s: t } of ss)
+        h += `<tr class="sty ${t.units < LOW ? "low" : ""} ${st.style === y && st.cat === c ? "sel" : ""}" data-cat="${esc(c)}" data-style="${esc(y)}">
+          <td>${esc(y)}</td><td>${int(t.units)}</td><td>${money(t.rev)}</td><td>${money(t.avg)}</td><td>${money(t.med)}</td><td>${money(t.mode)}</td>
+          <td>${rangeCell(t, scale)}</td></tr>`;
+    }
+  }
+  $("perf-body").innerHTML = h || `<tr><td colspan="7" class="empty">No orders in this period</td></tr>`;
+}
+$("perf-body").addEventListener("click", e => {
+  const tr = e.target.closest("tr"); if (!tr) return;
+  const c = tr.dataset.cat, y = tr.dataset.style;
+  if (y) { select(c, st.style === y ? "" : y); return; }
+  if (e.target.closest(".caret")) { st.open.has(c) ? st.open.delete(c) : st.open.add(c); perf(); return; }
+  if (st.cat === c && !st.style) { st.open.delete(c); select("", ""); } else { st.open.add(c); select(c, ""); }
+});
+
+function sizeRank(s) { if (s == null) return 9999; const i = SIZE_ORDER.indexOf(s); if (i >= 0) return i; const n = parseFloat(s); return isNaN(n) ? 5000 : 100 + n; }
+function hbars(el, items, fmt) {
+  if (!items.length) { $(el).innerHTML = `<div class="empty">No data</div>`; return; }
+  const mx = Math.max(...items.map(i => i.v), 1);
+  $(el).innerHTML = items.map(i => `<div class="hbar ${i.low ? "low" : ""}" title="${esc(i.k)}: ${fmt(i.v)}"><span class="lbl">${esc(i.k)}</span>
+    <span class="trk"><div class="fill" style="width:${100 * i.v / mx}%;${i.low ? "opacity:.45" : ""}"></div></span><span class="val">${fmt(i.v)}</span></div>`).join("");
+}
+function scGroup(k) { return SIZE_ORDER.includes(k) ? "Apparel" : (parseFloat(k) >= 24 ? "Waist" : "Shoes"); }
+function scAgg(rows, keyFn) {
+  const o = {};
+  for (const r of rows) { const k = keyFn(r); if (!k) continue;
+    const a = (o[k] ||= { units: 0, rev: 0, orders: new Set(), lot: 0 });
+    a.units += r[C.units]; a.rev += r[C.revenue];
+    if (!a.orders.has(r[C.order])) { a.orders.add(r[C.order]); a.lot += r[C.lot_price]; } }
+  return o;
+}
+function scVal(a) { if (!a) return 0; const k = st.sc;
+  return k === "units" ? a.units : k === "revenue" ? a.rev : k === "avg" ? (a.units >= 3 ? a.rev / a.units : 0) : (a.orders.size >= 3 ? a.lot / a.orders.size : 0); }
+function barsHtml(entries) {
+  const fmt = st.sc === "units" ? int : money;
+  if (!entries.length) return `<div class="empty">No data</div>`;
+  const mx = Math.max(...entries.map(([, a]) => scVal(a)), 1);
+  return entries.map(([k, a]) => { const v = scVal(a), w = v ? Math.max(2, 100 * v / mx) : 0;
+    return `<div class="hbar" data-tip="${esc(k)} · ${int(a.units)} units · ${money(a.rev)} · avg ${money(a.units ? a.rev / a.units : null)}">
+      <span class="lbl">${esc(k)}</span><span class="trk"><div class="fill" style="width:${w}%"></div></span><span class="val">${v ? fmt(v) : "–"}</span></div>`; }).join("");
+}
+function panelHtml(g, gRows) {
+  const fmt = st.sc === "units" ? int : money, isRate = st.sc === "avg" || st.sc === "aov";
+  const sizes = [...new Set(gRows.map(r => r[C.size]))].sort((a, b) => sizeRank(a) - sizeRank(b));
+  const sTot = scAgg(gRows, r => r[C.size]);
+  const cRows = gRows.filter(r => r[C.color]);
+  const cTot = scAgg(cRows, r => r[C.color]);
+  const colors = Object.entries(cTot).sort((a, b) => b[1].units - a[1].units).slice(0, 10).map(x => x[0]);
+  const cell = scAgg(cRows, r => r[C.size] + "|" + r[C.color]);
+  const vals = Object.values(cell).map(scVal).filter(v => v), mx = Math.max(...vals, 1), mn = isRate ? Math.min(...vals) : 0;
+  const sMax = Math.max(...sizes.map(x => scVal(sTot[x])), 1), cMax = Math.max(...colors.map(c => scVal(cTot[c])), 1);
+  const units = gRows.reduce((x, r) => x + r[C.units], 0);
+  let h = `<colgroup><col style="width:104px">${sizes.map(() => "<col>").join("")}<col style="width:130px"></colgroup>`;
+  h += `<tr><td class="rowh" style="vertical-align:bottom;font-weight:400;color:var(--faint)">All colors</td>${sizes.map(x => { const v = scVal(sTot[x]);
+    return `<td class="vb" data-tip="${esc(g)} ${esc(x)} · all colors: ${v ? fmt(v) : "–"}"><div class="vlab">${v ? fmt(v) : ""}</div><div class="vbar" style="height:${v ? Math.max(2, 30 * v / sMax) : 0}px"></div></td>`; }).join("")}<td></td></tr>`;
+  h += `<tr><th></th>${sizes.map(x => `<th class="sz">${esc(x)}</th>`).join("")}<th class="sz" style="text-align:left;padding-left:8px">All sizes</th></tr>`;
+  for (const c of colors) { const ct = scVal(cTot[c]);
+    h += `<tr><td class="rowh" title="${esc(c)}">${esc(c)}</td>${sizes.map(x => { const a = cell[x + "|" + c], v = scVal(a);
+      const bg = heatColor(v, mx, mn), dark = BLUES.indexOf(bg) >= 5;
+      return `<td class="c" style="background:${bg};color:${dark ? "#fff" : "#1a1d23"}" data-tip="${esc(c)} · ${esc(x)}: ${a ? int(a.units) + " units · " + money(a.rev) : "no sales"}">${v ? fmt(v) : ""}</td>`; }).join("")}
+      <td class="tb"><span class="tbar" style="width:${ct ? Math.max(2, 64 * ct / cMax) : 0}px"></span><span class="tval">${ct ? fmt(ct) : "–"}</span></td></tr>`; }
+  if (!colors.length) h += `<tr><td colspan="${sizes.length + 2}" class="empty">No color data for these sizes</td></tr>`;
+  return `<div class="scpanel ${sizes.length > 11 ? "wide" : ""}"><h3>${g} <span>${int(units)} units · top ${colors.length} colors</span></h3><table class="sc">${h}</table></div>`;
+}
+function sizesColors(rows) {
+  const total = rows.reduce((x, r) => x + r[C.units], 0);
+  const wS = rows.filter(r => r[C.size]).reduce((x, r) => x + r[C.units], 0), wC = rows.filter(r => r[C.color]).reduce((x, r) => x + r[C.units], 0);
+  $("n-sc").textContent = `${int(total)} units`;
+  $("sc-foot").textContent = total ? `Size known for ${Math.round(100 * wS / total)}% of units · color known for ${Math.round(100 * wC / total)}% (not every note lists a color)` : "";
+  const sizeGroups = new Set(rows.filter(r => r[C.size]).map(r => scGroup(r[C.size])));
+  $("sc-hint").hidden = !!st.cat || sizeGroups.size < 2;
+  let html = "";
+  for (const g of ["Apparel", "Waist", "Shoes"]) {
+    const gRows = rows.filter(r => r[C.size] && scGroup(r[C.size]) === g);
+    if (gRows.length) html += panelHtml(g, gRows);
+  }
+  $("sc-groups").innerHTML = html || `<div class="empty">No size data for this selection</div>`;
+}
+function heatColor(v, mx, mn = 0) { if (!v) return "#f6f7f9"; const f = mx > mn ? (v - mn) / (mx - mn) : 1;
+  return BLUES[Math.min(BLUES.length - 1, 1 + Math.floor(f * (BLUES.length - 1.01)))]; }
+function heatCell(v, mx, label, title, mn = 0) { const bg = heatColor(v, mx, mn), dark = BLUES.indexOf(bg) >= 5;
+  return `<td style="background:${bg};color:${dark ? "#fff" : "#1a1d23"}" data-tip="${esc(title)}">${label}</td>`; }
+document.addEventListener("mousemove", e => { const t = e.target.closest("[data-tip]"); tip(e, t ? t.dataset.tip : null); });
+
+const HOURS = [...Array(24).keys()].map(i => (i + 9) % 24);  // business day: 9am -> 8am
+const hl = h => (h % 12 || 12) + (h < 12 ? "a" : "p");
+function timing(rows) {
+  const k = st.time, agg = {}, rowA = {}, colA = {};
+  const add = (o, key, r) => { const a = (o[key] ||= { orders: new Set(), units: 0, rev: 0 }); a.orders.add(r[C.order]); a.units += r[C.units]; a.rev += r[C.revenue]; };
+  for (const r of rows) { add(agg, r[C.dow] + "|" + r[C.hour], r); add(rowA, r[C.dow], r); add(colA, r[C.hour], r); }
+  const isRate = k === "avg" || k === "aov", perDay = st.per === "perday" && !isRate;
+  [...$("seg-per").children].forEach(b => b.disabled = isRate);
+  // "Avg per Day": divide by the number of days we have data for (each weekday counted separately)
+  const dates = [...new Set(rowsDate().map(r => r[C.date]))];
+  const nDays = dates.length || 1, nDow = Array(7).fill(0);
+  for (const d of dates) nDow[(new Date(d + "T12:00:00").getDay() + 6) % 7]++;
+  const raw = a => !a ? 0 : k === "orders" ? a.orders.size : k === "units" ? a.units : k === "revenue" ? a.rev
+    : k === "avg" ? (a.units >= 5 ? a.rev / a.units : 0) : (a.orders.size >= 5 ? a.rev / a.orders.size : 0);
+  const val = (a, div) => perDay ? raw(a) / Math.max(div || 1, 1) : raw(a);
+  const fmt = isRate || k === "revenue" ? money : (perDay ? (v => v.toLocaleString(undefined, { maximumFractionDigits: 1 })) : int);
+  const hours = HOURS.filter(h => colA[h]);
+  $("n-time").textContent = `${int(new Set(rows.map(r => r[C.order])).size)} orders · Eastern Time`;
+  if (!hours.length) { $("heat").innerHTML = `<tr><td class="empty">No orders</td></tr>`; $("heat-legend").innerHTML = ""; drawTrend(rows); return; }
+  const cells = Object.entries(agg).map(([key, a]) => val(a, nDow[+key.split("|")[0]])).filter(v => v), mx = Math.max(...cells, 1);
+  const mn = isRate ? Math.min(...cells) : 0;   // rates: color low-to-high within the grid
+  const edge = isRate ? "Avg" : perDay ? "Typical Day" : "Total";
+  const dayV = [...Array(7).keys()].map(d => val(rowA[d], nDow[d])), hourV = hours.map(x => val(colA[x], nDays));
+  const dayMax = Math.max(...dayV), hourMax = Math.max(...hourV);
+  let h = `<tr><th></th>${hours.map(x => `<th>${hl(x)}</th>`).join("")}<th>${edge}</th></tr>`;
+  for (let d = 0; d < 7; d++) h += `<tr><td class="rowh">${DAYS[d]}</td>${hours.map(x => { const v = val(agg[d + "|" + x], nDow[d]);
+    return heatCell(v, mx, "", `${DAYS[d]} ${hl(x)}: ${v ? fmt(v) : "–"}`, mn); }).join("")}<td class="tot ${dayV[d] && dayV[d] === dayMax ? "top" : ""}">${dayV[d] ? fmt(dayV[d]) : "–"}</td></tr>`;
+  h += `<tr><td class="rowh">${edge}</td>${hourV.map(v => `<td class="tot ${v && v === hourMax ? "top" : ""}" style="font-size:10px">${v ? fmt(v) : ""}</td>`).join("")}<td></td></tr>`;
+  $("heat").innerHTML = h;
+  $("heat-legend").innerHTML = (isRate ? `${money(mn)} ` : "Low ") + `${BLUES.slice(1).map(c => `<span class="sw" style="background:${c}"></span>`).join("")} ` + (isRate ? money(mx) : "High")
+    + (isRate ? ` · cells with under 5 ${k === "avg" ? "units" : "orders"} left blank` : "") + (perDay ? ` · typical day across ${nDays} days with data` : "") + " · highest day and hour in green";
+  drawTrend(rows);
+}
+function drawTrend(rows) {
+  const ms = months(), k = st.time;
+  const by = Object.fromEntries(ms.map(m => [m, { orders: new Set(), units: 0, rev: 0 }]));
+  for (const r of rows) { const a = by[r[C.date].slice(0, 7)]; if (a) { a.orders.add(r[C.order]); a.units += r[C.units]; a.rev += r[C.revenue]; } }
+  const v = ms.map(m => { const a = by[m]; return k === "orders" ? a.orders.size : k === "units" ? a.units : k === "revenue" ? a.rev
+    : k === "avg" ? (a.units ? a.rev / a.units : null) : (a.orders.size ? a.rev / a.orders.size : null); });
+  const label = { orders: "Orders", units: "Units", revenue: "Revenue", avg: "Avg Price", aov: "AOV" }[k];
+  const isMoney = k === "revenue" || k === "avg" || k === "aov";
+  const cur = new Date().toISOString().slice(0, 7);
+  const labels = ms.map(m => new Date(m + "-15").toLocaleString([], { month: "short", year: "2-digit" }) + (m === cur ? " (so far)" : ""));
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart($("trend"), {
+    type: "line",
+    data: { labels, datasets: [{ label, data: v, borderColor: "#2a78d6", backgroundColor: "#2a78d6", borderWidth: 2, pointRadius: 4, pointHoverRadius: 6, spanGaps: false, tension: 0 }] },
+    options: { maintainAspectRatio: false, interaction: { mode: "index", intersect: false },
+      plugins: { legend: { display: false }, tooltip: { callbacks: { label: c => `${label}: ${isMoney ? money(c.parsed.y) : int(c.parsed.y)}` } } },
+      scales: { x: { grid: { display: false } }, y: { beginAtZero: true, grid: { color: "#eef0f3" }, ticks: { callback: x => isMoney ? "$" + x : x } } } }
+  });
+}
+
+function bundles() {
+  const rows = rowsDate(), byOrder = {};
+  for (const r of rows) (byOrder[r[C.order]] ||= { lot: r[C.lot_price], lines: r[C.lines], items: [] }).items.push(r);
+  let orders = Object.values(byOrder);
+  if (st.cat || st.style) orders = orders.filter(o => o.items.some(inSel));
+  const multi = orders.filter(o => o.lines >= 2), single = orders.filter(o => o.lines < 2);
+  const avg = a => a.length ? a.reduce((x, o) => x + o.lot, 0) / a.length : null;
+  $("b-share").textContent = orders.length ? (100 * multi.length / orders.length).toFixed(1) + "%" : "–";
+  $("b-share-s").textContent = `${int(multi.length)} of ${int(orders.length)} orders`;
+  $("b-aov-m").textContent = money(avg(multi));
+  const items = multi.reduce((x, o) => x + o.lines, 0);
+  $("b-items").textContent = multi.length ? `${(items / multi.length).toFixed(1)} items per bundle` : "";
+  $("b-ppi").textContent = items ? money(multi.reduce((x, o) => x + o.lot, 0) / items) : "–";
+  $("b-ppi-s").textContent = single.length ? `vs ${money(avg(single))} for a single-item order` : "";
+  $("n-bun").textContent = `${int(multi.length)} bundle orders (2+ items)`;
+  const name = r => r[C.style] === "Unspecified style" ? r[C.category] : r[C.style];
+  const pairs = {};
+  for (const o of multi) {
+    const names = [...new Set(o.items.map(name))].sort();
+    if (names.length === 1) { const k = names[0] + " ×" + o.items.length; }
+    for (let i = 0; i < names.length; i++) for (let j = i + 1; j < names.length; j++) {
+      const k = names[i] + " + " + names[j]; const p = (pairs[k] ||= { n: 0, lot: 0 }); p.n++; p.lot += o.lot; }
+    if (names.length === 1) { const k = names[0] + " (multiple)"; const p = (pairs[k] ||= { n: 0, lot: 0 }); p.n++; p.lot += o.lot; }
+  }
+  const top = Object.entries(pairs).sort((a, b) => b[1].n - a[1].n).slice(0, 25);
+  $("bun-body").innerHTML = top.length ? top.map(([k, p]) => `<tr class="${p.n < 5 ? "low" : ""}"><td>${esc(k)}</td><td>${int(p.n)}</td><td>${money(p.lot / p.n)}</td></tr>`).join("")
+    : `<tr><td colspan="3" class="empty">No multi-item orders for this selection</td></tr>`;
+}
+
+// ---------- refresh ----------
+async function pollStatus() {
+  const s = await (await fetch("/api/insights/status")).json();
+  const b = $("btn-refresh");
+  if (s.running) { b.disabled = true; b.textContent = s.message || "Refreshing..."; setTimeout(pollStatus, 3000); return; }
+  b.disabled = false; b.textContent = "Refresh data";
+  if (s.error) $("updated").textContent = "Refresh failed: " + s.error;
+}
+$("btn-refresh").onclick = async () => {
+  $("btn-refresh").disabled = true;
+  await fetch("/api/insights/refresh", { method: "POST" });
+  const wait = async () => { const s = await (await fetch("/api/insights/status")).json();
+    if (s.running) { $("btn-refresh").textContent = s.message || "Refreshing..."; setTimeout(wait, 3000); }
+    else { $("btn-refresh").textContent = "Refresh data"; $("btn-refresh").disabled = false; if (s.error) $("updated").textContent = "Refresh failed: " + s.error; else load(); } };
+  wait();
+};
+load(); pollStatus();
+</script>
+</body>
+</html>

@@ -24,6 +24,7 @@ from bucketing import bucket_orders
 from shipping import ship_orders, build_combined_label_pdf, log_shipping_results, get_shipping_history, reconcile_failed_orders, LABELS_DIR
 import shopify_inventory
 import inventory_deduct
+from analytics import dataset as insights_dataset, refresh as insights_refresh, store as insights_store
 
 load_dotenv()
 
@@ -505,8 +506,40 @@ def api_inv_log():
     return jsonify({"entries": entries, "count": len(entries)})
 
 
+# --- Sales Insights: product-level analysis of auction orders with notes ---
+# Data lives in analytics/data/sales_insights.db, kept current by
+# analytics/refresh.py (nightly + the Refresh button). Read-only on TikTok.
+_insights_cache = {"key": None, "data": None}
+
+
+@app.route("/insights")
+def insights_page():
+    return render_template("insights.html")
+
+
+@app.route("/api/insights/data")
+def api_insights_data():
+    key = (insights_store.get_meta("updated_at"), insights_refresh.status.get("finished"))
+    if _insights_cache["key"] != key or _insights_cache["data"] is None:
+        _insights_cache["data"] = insights_dataset.build()
+        _insights_cache["key"] = key
+    return jsonify(_insights_cache["data"])
+
+
+@app.route("/api/insights/refresh", methods=["POST"])
+def api_insights_refresh():
+    started = insights_refresh.start_background(days=14)
+    return jsonify({"started": started, "status": insights_refresh.status}), (200 if started else 409)
+
+
+@app.route("/api/insights/status")
+def api_insights_status():
+    return jsonify(dict(insights_refresh.status, updated_at=insights_store.get_meta("updated_at")))
+
+
 if __name__ == "__main__":
     load_state()
+    threading.Thread(target=insights_refresh.nightly_loop, daemon=True).start()
     poller = threading.Thread(target=poll_loop, daemon=True)
     poller.start()
     print(f"Dashboard running at http://localhost:{PORT}")
